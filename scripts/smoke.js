@@ -63,8 +63,13 @@ check(
   'raw digest fetch is inclusive of the seed row (documented API behaviour)'
 );
 
+// NOTE: this one is traffic-dependent, not a code check. If the firewall
+// happens to log nothing during the wait - a quiet network, or a few events per
+// second where the window lands badly - it reports a failure even though the
+// client is working. Re-run it, or generate a little traffic first.
 const { rows: delta, saturated } = await client.fwLogSince(digest);
 check(delta.length > 0, `fwLogSince returned ${delta.length} new rows`);
+if (!delta.length) info('^ no traffic in the sample window; this check depends on live events, so re-run before concluding anything is broken');
 check(!saturated, 'fetch was not saturated (no silent event loss)');
 check(
   !delta.some((r) => r.__digest__ === digest),

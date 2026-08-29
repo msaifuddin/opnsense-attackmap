@@ -48,6 +48,10 @@ node scripts/smoke.js      # verifies auth, incremental polling and the timezone
 node server/index.js       # http://localhost:8474
 ```
 
+> One smoke-test check samples six seconds of live firewall traffic. On a quiet
+> network it can report a failure simply because nothing was logged in that
+> window — re-run it before concluding something is broken.
+
 With Docker:
 
 ```bash
@@ -237,6 +241,11 @@ mis-classified: make sure `HOME_NETS` covers all your subnets.
 **Map is blank but `/api/health` is fine.** The tab is backgrounded (see design
 notes), or `public/world-110m.json` failed to load. Regenerate it with
 `node scripts/build-world.js`.
+
+**`smoke.js` fails on "fwLogSince returned 0 new rows".** That check samples six
+seconds of live traffic, so it fails on an idle network rather than because
+anything is wrong. Re-run it, or make a request through the firewall first. It
+is the only check in the script that depends on live events.
 
 ## Licence
 
