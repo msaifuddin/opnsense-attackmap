@@ -1,0 +1,360 @@
+:root {
+  --bg: #04070f;
+  --ink: #cfe3ff;
+  --dim: #6b86ab;
+  --line: rgba(90, 140, 200, 0.18);
+  --panel: rgba(6, 12, 24, 0.72);
+  --red: #ff3b30;
+  --magenta: #ff2bd1;
+  --amber: #ff8a00;
+  --cyan: #22d3ee;
+  --green: #4ade80;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  --panel-w: 330px;
+  --rail-gap: 18px;
+  --bar-h: 74px;
+  --legend-h: 56px;
+  /* Height the map occupies once the layout stacks (mobile). */
+  --map-h: 46vh;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font: 12px/1.45 var(--mono);
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#world { z-index: 0; }
+#arcs  { z-index: 1; }
+
+/* Pulls the eye to the middle of the map and stops the panels fighting it. */
+#vignette {
+  position: fixed; inset: 0; z-index: 2; pointer-events: none;
+  background:
+    radial-gradient(120% 90% at 50% 45%, transparent 40%, rgba(2, 5, 12, 0.75) 100%),
+    linear-gradient(to bottom, rgba(2, 5, 12, 0.85) 0, transparent 12%, transparent 86%, rgba(2, 5, 12, 0.9) 100%);
+}
+
+.sheet { display: contents; }
+
+/* ---------- top bar ---------- */
+
+.bar {
+  position: fixed; z-index: 4; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 24px; padding: 14px 20px;
+  padding-top: max(14px, env(safe-area-inset-top));
+}
+
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+
+.brand h1 {
+  margin: 0; font-size: 15px; font-weight: 600;
+  letter-spacing: 0.34em; color: #eaf2ff; white-space: nowrap;
+}
+
+.host {
+  color: var(--dim); letter-spacing: 0.1em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.dot {
+  flex: none;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--dim); box-shadow: 0 0 10px currentColor;
+  transition: background 0.3s;
+}
+.dot.live { background: var(--green); box-shadow: 0 0 12px var(--green); animation: breathe 2.4s ease-in-out infinite; }
+.dot.down { background: var(--red); box-shadow: 0 0 12px var(--red); }
+
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.badge {
+  flex: none;
+  padding: 2px 8px; border: 1px solid var(--amber); color: var(--amber);
+  border-radius: 3px; font-size: 10px; letter-spacing: 0.18em;
+}
+
+.counters { display: flex; gap: 28px; flex: none; }
+
+.counter { text-align: right; }
+.counter b {
+  display: block; font-size: 22px; font-weight: 600; line-height: 1.1;
+  color: #fff; font-variant-numeric: tabular-nums;
+}
+.counter span { color: var(--dim); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; }
+
+/* ---------- side panels ---------- */
+
+.panel {
+  position: fixed; z-index: 3;
+  top: var(--bar-h); bottom: var(--legend-h);
+  width: var(--panel-w); padding: 0 4px;
+  overflow: hidden auto;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  overscroll-behavior: contain;
+}
+.panel::-webkit-scrollbar { width: 6px; }
+.panel::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+
+.panel-left { left: var(--rail-gap); }
+
+/* space-between spreads the four groups down the full height, so a short list
+   does not leave a block of dead space under the last one. It degrades to
+   normal stacking (plus scrolling) when the content is taller than the panel. */
+.panel-right {
+  right: var(--rail-gap);
+  display: flex; flex-direction: column;
+  justify-content: space-between; gap: 10px;
+}
+.panel-right .grp { flex: 0 0 auto; }
+
+.panel h2 {
+  margin: 0 0 8px; padding-top: 14px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--dim);
+  border-top: 1px solid var(--line);
+}
+.panel h2:first-child { padding-top: 0; border-top: 0; }
+/* Only the first group loses its divider; grouping must not remove the rest. */
+.panel-right .grp h2 { padding-top: 12px; border-top: 1px solid var(--line); }
+.panel-right .grp:first-child h2 { padding-top: 0; border-top: 0; }
+.panel-right .rank { margin-bottom: 0; }
+.panel h2 small { opacity: 0.6; letter-spacing: 0.1em; }
+
+.ticker, .rank { list-style: none; margin: 0 0 14px; padding: 0; }
+
+.ticker li {
+  display: grid; grid-template-columns: 46px 1fr; gap: 8px;
+  padding: 4px 6px; margin-bottom: 2px;
+  background: var(--panel); border-left: 2px solid var(--c, var(--dim));
+  border-radius: 0 3px 3px 0;
+  animation: slidein 0.28s ease-out;
+}
+@keyframes slidein { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+
+.ticker .t { color: var(--dim); font-size: 10px; }
+/* min-width:0 lets the grid track actually shrink; without it a long line
+   overflows the panel instead of wrapping inside it. */
+.ticker .m { min-width: 0; }
+.ticker .ip,
+.ticker .sub { display: block; }
+/* The address stays on one line - it is a fixed width and the eye scans it.
+   Everything else wraps, because a truncated signature name is unreadable. */
+.ticker .ip {
+  color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ticker .sub {
+  color: var(--dim); font-size: 10px; line-height: 1.4;
+  white-space: normal; overflow-wrap: anywhere;
+}
+
+.rank li {
+  display: grid; grid-template-columns: 1fr auto; align-items: start;
+  gap: 8px; padding: 4px 6px; position: relative;
+  background: var(--panel); margin-bottom: 2px; border-radius: 3px;
+}
+/* Width is set inline from the share of the top value. */
+.rank li::before {
+  content: ''; position: absolute; inset: 0 auto 0 0;
+  width: var(--w, 0%); background: rgba(255, 59, 48, 0.14);
+  border-radius: 3px;
+}
+.rank .k, .rank .v { position: relative; }
+/* Signature names run long; wrap them rather than cutting them off, since the
+   distinguishing part of an ET rule name is usually at the end. */
+.rank .k { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+.rank .v { color: #fff; font-variant-numeric: tabular-nums; }
+.rank .cc { color: var(--dim); }
+
+/* Flags render as real glyphs on iOS/Android/macOS. Windows has no flag font,
+   so those platforms get a country-code chip instead of two squashed letters. */
+.flag { margin-right: 5px; }
+.flag-text {
+  display: inline-block;
+  padding: 0 4px; border-radius: 3px;
+  background: rgba(143, 166, 196, 0.16);
+  color: var(--ink); font-size: 9px; font-weight: 600;
+  letter-spacing: 0.06em; line-height: 15px; vertical-align: 1px;
+}
+/* The chip already carries the code; drop the duplicate label beside it. */
+[data-flags="text"] .rank .cc { display: none; }
+
+/* Addresses link out to a reputation lookup. Kept as a dotted underline rather
+   than link-blue so the feed stays readable at a glance. */
+.ticker .ip a,
+.rank .k a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(143, 233, 255, 0.45);
+  cursor: pointer;
+}
+.ticker .ip a:hover,
+.rank .k a:hover {
+  color: #8fe9ff;
+  border-bottom-color: currentColor;
+}
+
+/* ---------- legend ---------- */
+
+.legend {
+  position: fixed; z-index: 4; left: var(--rail-gap); right: var(--rail-gap);
+  bottom: 14px; bottom: max(14px, env(safe-area-inset-bottom));
+  display: flex; align-items: center; gap: 18px;
+  color: var(--dim);
+}
+
+.layers { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; flex: 1; }
+
+.lay { position: relative; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+/* Visually hidden rather than display:none, so it stays keyboard focusable. */
+.lay input { position: absolute; inset: 0 auto auto 0; opacity: 0; pointer-events: none; }
+.lay i {
+  width: 18px; height: 3px; border-radius: 2px;
+  background: var(--c); box-shadow: 0 0 8px var(--c); opacity: 0.28;
+  transition: opacity 0.2s;
+}
+.lay input:checked + i { opacity: 1; }
+.lay:has(input:checked) { color: var(--ink); }
+.lay:focus-within { outline: 1px solid var(--line); outline-offset: 4px; border-radius: 3px; }
+.hint { opacity: 0.55; }
+
+.meta { font-size: 10px; letter-spacing: 0.08em; flex: none; }
+
+/* ==========================================================================
+   Responsive
+   ========================================================================== */
+
+/* Narrower rails before giving up on them entirely. */
+@media (max-width: 1500px) { :root { --panel-w: 300px; } }
+@media (max-width: 1280px) { :root { --panel-w: 264px; } .counters { gap: 18px; } }
+@media (max-width: 1080px) {
+  :root { --panel-w: 232px; }
+  .brand h1 { font-size: 13px; letter-spacing: 0.24em; }
+  .counter b { font-size: 18px; }
+  .host { display: none; }
+}
+
+/* ---------- stacked layout ----------
+   Below this width the side rails stop working: the map has no usable middle
+   and the feed used to be hidden outright, which threw away the most useful
+   panel on the smallest screen. Instead the map becomes a fixed banner at the
+   top and everything else flows and scrolls underneath it. */
+@media (max-width: 900px) {
+  html, body { overflow: hidden auto; height: auto; min-height: 100%; }
+
+  canvas, #vignette {
+    inset: 0 0 auto 0;
+    height: var(--map-h);
+  }
+  #vignette {
+    background:
+      radial-gradient(130% 100% at 50% 40%, transparent 45%, rgba(2, 5, 12, 0.7) 100%),
+      linear-gradient(to bottom, rgba(2, 5, 12, 0.9) 0, transparent 22%, transparent 70%, rgba(2, 5, 12, 0.95) 100%);
+  }
+
+  .bar {
+    flex-direction: column; align-items: stretch; gap: 10px;
+    padding: 10px 14px;
+    padding-top: max(10px, env(safe-area-inset-top));
+  }
+  .brand { justify-content: center; }
+  .brand h1 { font-size: 12px; letter-spacing: 0.28em; }
+
+  /* Four tiles across, so the numbers stay glanceable without scrolling. */
+  .counters {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 6px; text-align: center;
+  }
+  .counter { text-align: center; }
+  .counter b { font-size: 17px; }
+  .counter span { font-size: 9px; letter-spacing: 0.06em; }
+  .counter span i { display: none; }  /* drop "/ min" - the row is self-evident */
+
+  .sheet {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 0 18px;
+    position: relative; z-index: 3;
+    margin-top: var(--map-h);
+    padding: 4px 14px calc(var(--legend-h) + 24px);
+    padding-bottom: calc(var(--legend-h) + 24px + env(safe-area-inset-bottom));
+    background: linear-gradient(to bottom, rgba(4, 7, 15, 0.92), var(--bg) 40px);
+  }
+
+  .panel {
+    position: static;
+    width: auto; padding: 0;
+    overflow: visible;
+    display: block;
+  }
+  .panel-right { display: block; }
+  .panel-right .grp h2,
+  .panel h2 { padding-top: 18px; border-top: 1px solid var(--line); }
+  .panel-left h2 { padding-top: 10px; border-top: 0; }
+
+  /* Cap the feed so the ranking panels are reachable without endless scrolling. */
+  .ticker {
+    max-height: 46vh; overflow: hidden auto;
+    overscroll-behavior: contain;
+    -webkit-mask-image: linear-gradient(to bottom, #000 90%, transparent);
+            mask-image: linear-gradient(to bottom, #000 90%, transparent);
+  }
+
+  .legend {
+    left: 0; right: 0; bottom: 0;
+    flex-direction: column; align-items: stretch; gap: 6px;
+    padding: 8px 14px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+    background: rgba(4, 7, 15, 0.94);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid var(--line);
+  }
+  /* Horizontal strip of toggles - wrapping five of them stacks too tall. */
+  .layers {
+    flex-wrap: nowrap; gap: 14px;
+    overflow-x: auto; scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .layers::-webkit-scrollbar { display: none; }
+  .lay { flex: none; padding: 4px 0; min-height: 32px; }
+  .hint { display: none; }
+  .meta { text-align: center; opacity: 0.7; }
+}
+
+@media (max-width: 560px) {
+  :root { --map-h: 38vh; }
+  .counters { grid-template-columns: repeat(2, 1fr); gap: 8px 6px; }
+  .sheet { grid-template-columns: 1fr; padding-left: 12px; padding-right: 12px; }
+  /* The timestamp is 8 monospace characters; give the column enough room or it
+     collides with the address next to it. */
+  .ticker li { grid-template-columns: 48px 1fr; gap: 6px; }
+  .ticker .t { font-size: 9px; white-space: nowrap; }
+  .ticker { max-height: none; -webkit-mask-image: none; mask-image: none; }
+
+  /* Wrap rather than scroll: a horizontally scrolling legend hides toggles the
+     user has no reason to suspect are there. */
+  .layers { flex-wrap: wrap; gap: 6px 14px; overflow-x: visible; }
+  .lay { min-height: 28px; }
+}
+
+/* Landscape phones: the map banner would eat the whole screen. */
+@media (max-width: 900px) and (orientation: landscape) and (max-height: 520px) {
+  :root { --map-h: 62vh; }
+  .counters { grid-template-columns: repeat(4, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticker li { animation: none; }
+  .dot.live { animation: none; }
+}

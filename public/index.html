@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<meta name="theme-color" content="#04070f" />
+<!-- Placeholders only: the real values arrive over the websocket, from
+     SITE_TITLE / SITE_SUBTITLE / SITE_DESCRIPTION / PAGE_TITLE. -->
+<title>Attack Map</title>
+<meta name="description" id="meta-description" content="Live firewall and IDS activity" />
+<meta name="robots" content="noindex, nofollow" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌐</text></svg>" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<canvas id="world"></canvas>
+<canvas id="arcs"></canvas>
+<div id="vignette"></div>
+
+<header class="bar">
+  <div class="brand">
+    <span class="dot" id="conn-dot"></span>
+    <h1 id="site-title">ATTACK MAP</h1>
+    <span class="host" id="site-subtitle"></span>
+    <span class="badge" id="replay-badge" hidden>REPLAY</span>
+  </div>
+  <div class="counters">
+    <div class="counter"><b id="c-blocks">0</b><span>blocks<i> / min</i></span></div>
+    <div class="counter"><b id="c-alerts">0</b><span>ids alerts<i> / min</i></span></div>
+    <div class="counter"><b id="c-attackers">0</b><span>attackers<i> / hr</i></span></div>
+    <div class="counter"><b id="c-events">0</b><span>events<i> / min</i></span></div>
+  </div>
+</header>
+
+<!-- On desktop this is `display: contents`, so the panels keep their fixed side
+     rails. Below the mobile breakpoint it becomes a real scrolling container
+     that flows underneath the map. -->
+<div class="sheet">
+
+  <section class="panel panel-left">
+    <h2>Live feed</h2>
+    <ul id="ticker" class="ticker"></ul>
+  </section>
+
+  <!-- Each heading is grouped with its list so leftover vertical space is
+       shared between the groups rather than pooling as dead space. -->
+  <section class="panel panel-right">
+    <div class="grp">
+      <h2>Top origins <small>1h</small></h2>
+      <ul id="top-countries" class="rank"></ul>
+    </div>
+    <div class="grp">
+      <h2>Top attackers <small>1h</small></h2>
+      <ul id="top-attackers" class="rank"></ul>
+    </div>
+    <div class="grp">
+      <h2>Targeted ports <small>1h</small></h2>
+      <ul id="top-ports" class="rank"></ul>
+    </div>
+    <div class="grp">
+      <h2>IDS signatures <small>1h</small></h2>
+      <ul id="top-signatures" class="rank"></ul>
+    </div>
+  </section>
+
+</div>
+
+<footer class="legend">
+  <div class="layers">
+    <label class="lay" data-layer="block_in"><input type="checkbox" checked /><i style="--c:#ff3b30"></i>Blocked inbound</label>
+    <label class="lay" data-layer="ids"><input type="checkbox" checked /><i style="--c:#ff2bd1"></i>IDS alert</label>
+    <label class="lay" data-layer="pass_in"><input type="checkbox" checked /><i style="--c:#4ade80"></i>Passed inbound</label>
+    <label class="lay" data-layer="pass_out"><input type="checkbox" checked /><i style="--c:#22d3ee"></i>Outbound</label>
+    <label class="lay" data-layer="internal"><input type="checkbox" checked /><i style="--c:#8fa6c4"></i>Internal <span class="hint">(feed only)</span></label>
+  </div>
+  <span class="meta" id="meta">connecting…</span>
+</footer>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+services:
+  attackmap:
+    build: .
+    image: opnsense-attackmap:latest
+    container_name: opnsense-attackmap
+
+    # Credentials and tuning live in .env next to this file - never in the image.
+    env_file:
+      - .env
+
+    environment:
+      - PORT=8474
+      - HOST=0.0.0.0
+
+    ports:
+      - "8474:8474"
+
+    # GeoLite2 databases are downloaded into here on first run (~74 MB), so it
+    # must be WRITABLE - do not add :ro. A named volume is used because Docker
+    # seeds it with the image's ownership, avoiding the root-owned bind-mount
+    # permission trap. It is public data and re-downloadable, so nothing is lost
+    # if the volume is removed.
+    volumes:
+      - geodata:/app/data
+
+    restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  geodata:
