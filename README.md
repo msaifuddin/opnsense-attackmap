@@ -200,6 +200,41 @@ Two independent pollers, and no configuration change on the firewall:
 The two loops are deliberately independent: the firewall log is the reliable
 high-rate feed and must not stall because Suricata is slow, restarting or empty.
 
+### What the IDS feed can and cannot see
+
+Worth understanding before you go tuning Suricata to catch inbound attacks,
+because it probably cannot.
+
+In OPNsense's default **IDS (non-inline) mode with netmap**, Suricata attaches
+to the interface's *host-stack* ring — alerts arrive tagged `igc0^`, with the
+caret. It deliberately does not seize the NIC rings, because netmap taking
+exclusive ownership of the card would break forwarding. The consequence: it only
+ever sees traffic that has already traversed the host stack, i.e. **post-firewall**.
+Scans your firewall blocks never reach it, so they generate no alert.
+
+If your WAN is PPPoE this is compounded. Suricata cannot capture on the `pppoe0`
+pseudo-interface at all — selecting WAN in the IDS settings silently yields
+nothing, with the service still reporting healthy. Assigning the physical parent
+NIC as a separate interface does make capture work, but measured over ~49
+minutes it produced **239 alerts, all outbound, and zero signatures that the LAN
+interface had not already caught** — post-NAT, so strictly less informative than
+watching LAN, at a ~14% increase in alert volume.
+
+So:
+
+- **Inbound attacks come from the firewall log**, which is complete and is what
+  the map's block layer draws. The IDS layer is not the source for those.
+- **IDS earns its place on LAN**, where it catches a compromised internal host
+  talking out — with real internal addresses rather than your NAT address.
+- Seeing raw pre-firewall traffic would need **IPS/inline** mode, so Suricata
+  bridges the NIC and host rings. On an internet uplink that is a substantially
+  riskier change, and most inbound scans are bare SYNs to closed ports that match
+  no signature anyway.
+
+If you do want to inspect raw WAN packets, assigning the physical parent
+interface makes it selectable under **Interfaces → Diagnostics → Packet
+Capture**, which is a better tool for that job than an IDS.
+
 ### Design notes
 
 - **Volume.** Most events on a home connection are outbound passes. Drawing them
@@ -213,8 +248,13 @@ high-rate feed and must not stall because Suricata is slow, restarting or empty.
 - **Flat map, flat arcs.** Arcs take the direct chord between two points. Routing
   “the short way” around the antimeridian is correct on a globe, but on a flat
   map it just looks like an attack flying off the wrong edge.
-- **Layout.** The map is projected into the gap *between* the side panels rather
-  than full-bleed, so nothing on it is hidden behind the UI.
+- **Layout.** The map is drawn at one uniform scale — stretching an axis to fill
+  the box makes the continents visibly wrong — and positioned in the gap between
+  the side panels so nothing on it hides behind the UI. The leftover space is not
+  blank: the ocean and its gradient cover the whole viewport, so it reads as
+  full-bleed. Land is drawn with copies offset by one map width, which is what
+  carries rings across the antimeridian seam, and clipped to the map rectangle so
+  the copy a whole width away cannot appear as a second set of continents.
 - **Backgrounded tabs.** Browsers throttle `requestAnimationFrame` to zero in a
   hidden tab, so the canvas freezes on its last frame until you look at it again.
   That is normal; the server keeps ingesting throughout.
@@ -232,6 +272,12 @@ high-rate feed and must not stall because Suricata is slow, restarting or empty.
 must be a `POST`, which needs an API key. Check Suricata is enabled and bound to
 the interfaces you expect — and note that adding an interface needs an
 **Apply/reconfigure** before it takes effect.
+
+**No IDS alerts for inbound attacks, even though the firewall is blocking them.**
+Expected, not a fault. See
+[What the IDS feed can and cannot see](#what-the-ids-feed-can-and-cannot-see) —
+in netmap IDS mode Suricata only observes post-firewall traffic, and on a PPPoE
+WAN it cannot capture on `pppoe0` at all.
 
 **Everything is hours out of date.** Timezone — see above.
 
