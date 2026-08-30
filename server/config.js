@@ -162,6 +162,13 @@ export const config = {
     // POLICY / DNS / TLS / CHAT chatter your own hosts generate. Set 1 to rank
     // every alert, which is what the panel used to do.
     minSeverity: num('IDS_MIN_SEVERITY', 3),
+    // Individual rule IDs to keep out of the threats panel. Some rules are
+    // genuine signal in general but constant noise on a particular network -
+    // typically because you legitimately run the service they watch for. They
+    // stay visible under the panel's "all" toggle, so nothing is hidden, only
+    // deprioritised. Prefer this to lowering IDS_MIN_SEVERITY, which would
+    // discard a whole class.
+    muteSids: new Set(list('IDS_MUTE_SIDS', []).map(String)),
   },
   // Resolve attacker addresses to hostnames for the ranking panels. Turning
   // this off is a reasonable choice when publishing: PTR queries tell your

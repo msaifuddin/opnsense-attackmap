@@ -46,11 +46,22 @@ Both filters exist because the honest answer to "what is hitting me" is much
 smaller than the raw event count, and the noise was outranking the signal.
 
 - **IDS signatures** default to threat classes — `SCAN`, `EXPLOIT`, `TROJAN`,
-  `MALWARE`, `CNC`, `DOS` and similar — and hide the `ET INFO` / `ET POLICY` /
-  `ET DNS` telemetry your own hosts generate. On the author's network that is
-  the difference between 6 signatures and 1: roughly 90% of alerts are Telegram
-  and Discord DNS lookups. The `all` toggle in the panel header shows everything.
-  `IDS_MIN_SEVERITY` sets the bar; `1` restores the unfiltered ranking.
+  `MALWARE`, `CNC`, `DOS`, `HUNTING` and similar — and hide the `ET INFO` /
+  `ET POLICY` / `ET DNS` telemetry your own hosts generate. On the author's
+  network that is the difference between 6 signatures and 1: roughly 90% of
+  alerts are Telegram and Discord DNS lookups. The `all` toggle in the panel
+  header shows everything. `IDS_MIN_SEVERITY` sets the bar; `1` restores the
+  unfiltered ranking.
+
+  `HUNTING` counts as a threat class deliberately. It is the "this could be
+  command-and-control, go and look" category, and it is where malware hiding
+  inside services you legitimately run — Telegram, Discord, tunnelling
+  providers — actually surfaces. Rating it below the bar hides the alerts most
+  worth investigating. The cost is that one rule can drown the panel if you use
+  the service it watches, which is what **`IDS_MUTE_SIDS`** is for: mute the
+  individual rule rather than demoting the whole class. Muted alerts remain
+  visible under `all`, and muting is absolute — a muted rule stays out even if
+  your IPS policy drops it.
 - **Blocked inbound traffic** counts as an attack only when it was aimed at
   something. A block that came *from* a well-known service port and landed on a
   non-service port is the reply leg of a connection you opened, arriving after
@@ -175,6 +186,7 @@ matter most:
 | `MAP_CENTER_LON` | `0` | Conventional world map. `home` centres on your own longitude. |
 | `IP_LOOKUP_URL` | Cloudflare Radar | Where addresses link to; `{ip}` is substituted. Empty disables the links. |
 | `IDS_MIN_SEVERITY` | `3` | Threat bar for the signature panel, on the 1–4 scale derived from the ET class. `1` ranks every alert. |
+| `IDS_MUTE_SIDS` | – | Rule SIDs kept out of the threats panel, comma separated. Still shown under `all`. Prefer this to lowering the bar. |
 | `RDNS` | `1` | Resolve attacker addresses to hostnames. Local addresses are never resolved regardless. |
 | `STATS_WINDOWS` | `1h,24h` | Ranking windows offered in the UI; the first is the default. |
 | `STATS_RETAIN_HOURS` | `26` | How much history to keep. Must cover your longest window. |

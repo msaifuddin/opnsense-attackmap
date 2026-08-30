@@ -55,7 +55,13 @@ const SEVERITY_BY_CLASS = {
   TROJAN: 4, MALWARE: 4, EXPLOIT: 4, EXPLOIT_KIT: 4, WORM: 4, CNC: 4, PHISHING: 4,
   ATTACK_RESPONSE: 3, SCAN: 3, DOS: 3, SHELLCODE: 3, WEB_SPECIFIC_APPS: 3, WEB_SERVER: 3,
   CURRENT_EVENTS: 3, MOBILE_MALWARE: 4, USER_AGENTS: 2, ADWARE_PUP: 3,
-  POLICY: 2, HUNTING: 2, GAMES: 1, P2P: 2, CHAT: 1, DNS: 2, TLS: 1, TFTP: 2,
+  // HUNTING is the "this could be command-and-control, go and look" class, and
+  // it is where malware hiding inside legitimate services - Telegram, Discord,
+  // tunnelling providers - actually shows up. Rating it below the threat bar
+  // hid exactly the alerts worth investigating, so it sits at 3. Individual
+  // noisy rules are handled with IDS_MUTE_SIDS rather than by demoting a whole
+  // class of genuine signal.
+  POLICY: 2, HUNTING: 3, GAMES: 1, P2P: 2, CHAT: 1, DNS: 2, TLS: 1, TFTP: 2,
   INFO: 1, MISC: 2, COINMINER: 3, JA3: 2, INAPPROPRIATE: 2,
 };
 
@@ -80,6 +86,10 @@ export function classifySignature(sig) {
  */
 export function isThreatAlert(ev) {
   if (ev.source !== 'ids') return false;
+  // Muting is absolute, deliberately: a rule you have judged to be noise on your
+  // network should not reappear in the threats panel because it happened to be
+  // dropped. Predictable beats clever, and the alert is still there under "all".
+  if (ev.sid != null && config.ids.muteSids.has(String(ev.sid))) return false;
   if (ev.blocked === true) return true;
   return (ev.severity ?? 0) >= config.ids.minSeverity;
 }
