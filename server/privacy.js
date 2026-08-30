@@ -142,12 +142,28 @@ export class Redactor {
     return out;
   }
 
-  /** Rankings can name attackers freely, but not our own hosts. */
+  /**
+   * Rankings can name attackers freely, but not our own hosts. This runs BEFORE
+   * hostname enrichment, so a pseudonymised address is no longer an IP by the
+   * time anything would think to resolve it.
+   */
   stats(s) {
     if (!this.active) return s;
+    // Every list that names addresses needs the same pass. Signature rows in
+    // particular attribute internal alerts to one of our own hosts, which is
+    // useful precisely because it is a stable pseudonym rather than the real
+    // address.
+    const sources = (rows) => rows.map((r) => (
+      r.sources
+        ? { ...r, sources: r.sources.map((x) => ({ ...x, ip: this.#ip(x.ip) })) }
+        : r
+    ));
     return {
       ...s,
       topAttackers: s.topAttackers.map((r) => ({ ...r, key: this.#ip(r.key) })),
+      topPorts: sources(s.topPorts),
+      topSignatures: sources(s.topSignatures),
+      topSignaturesAll: sources(s.topSignaturesAll),
     };
   }
 

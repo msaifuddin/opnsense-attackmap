@@ -66,6 +66,24 @@ export function classifySignature(sig) {
   return { category, severity: SEVERITY_BY_CLASS[category] ?? 2 };
 }
 
+/**
+ * Is this alert a genuine threat, or telemetry?
+ *
+ * With the sensor on LAN most alerts are ET INFO / ET POLICY / ET DNS chatter
+ * from your own hosts - real records, but not attacks, and they otherwise
+ * outrank actual attacks purely on volume.
+ *
+ * `blocked` is kept in the test even though Suricata in IDS (non-inline) mode
+ * always reports "allowed": it costs nothing now and makes the filter strictly
+ * more accurate if the sensor is ever moved to IPS. It cannot be the only test
+ * for the same reason - in IDS mode it would match nothing at all.
+ */
+export function isThreatAlert(ev) {
+  if (ev.source !== 'ids') return false;
+  if (ev.blocked === true) return true;
+  return (ev.severity ?? 0) >= config.ids.minSeverity;
+}
+
 let seq = 0;
 const nextId = () => `${Date.now().toString(36)}-${(seq = (seq + 1) % 1e6).toString(36)}`;
 
@@ -144,6 +162,57 @@ export function normalizeIds(row, { isHome }) {
     bytes: row.flow ? (row.flow.bytes_toserver ?? 0) + (row.flow.bytes_toclient ?? 0) : null,
     count: 1,
   };
+}
+
+/**
+ * The endpoint an event is *about* - who to name when attributing it.
+ *
+ * Which end that is depends on direction, and getting it wrong is misleading
+ * rather than merely unhelpful:
+ *   in       - the source; they came to us
+ *   out      - the destination; our host is the source, and naming it would
+ *              attribute every outbound alert to a pseudonymised LAN host
+ *   internal - the source host; there is no far end, and which of our hosts
+ *              triggered the rule is the whole question
+ */
+export function farEnd(ev) {
+  return ev.dir === 'out' ? ev.dst : ev.src;
+}
+
+// Service ports above 1024 that are worth attacking, so a block aimed at one is
+// a real attempt rather than stray traffic. Mirrors PORT_NAMES in public/app.js.
+const SERVICE_PORTS = new Set([
+  1433, 1521, 1900, 2375, 2376, 3306, 3389, 4444, 5000, 5060, 5432, 5555, 5900,
+  5901, 6379, 7547, 8000, 8006, 8080, 8081, 8443, 8728, 8888, 9000, 9200, 11211,
+  27017, 32764,
+]);
+
+const isServicePort = (p) => p > 0 && (p < 1024 || SERVICE_PORTS.has(p));
+
+/**
+ * Was this inbound block actually aimed at something?
+ *
+ * The rankings were being diluted by blocks from Google and Akamai landing on
+ * odd high ports - those are late replies to connections we opened, arriving
+ * after the state entry expired, not attacks.
+ *
+ * The discriminator is the SOURCE port, not the destination. A reply comes FROM
+ * the service we talked to, so it carries sport=443; a scanner picks an
+ * ephemeral source port and aims at a service. Judging by destination port
+ * instead does not work: measured against the live log, the replies land on
+ * 8836, 14325, 19445, 25408, 30277 - OPNsense is FreeBSD, whose ephemeral range
+ * starts at 10000 rather than Linux's 32768, and some land below even that.
+ *
+ * Ordering matters. A service destination is an attack whatever the source port,
+ * so someone probing SMTP from port 443 is still counted.
+ */
+export function isAttackTarget(ev) {
+  const dport = ev.dst.port;
+  if (!dport) return true; // ICMP and friends have no port to judge
+  if (isServicePort(dport)) return true;
+  // Non-service destination: a service source port means this is the reply leg
+  // of a conversation we started.
+  return !isServicePort(ev.src.port);
 }
 
 /** Layer an event belongs to, which is what the UI toggles are bound to. */

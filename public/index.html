@@ -29,7 +29,9 @@
   <div class="counters">
     <div class="counter"><b id="c-blocks">0</b><span>blocks<i> / min</i></span></div>
     <div class="counter"><b id="c-alerts">0</b><span>ids alerts<i> / min</i></span></div>
-    <div class="counter"><b id="c-attackers">0</b><span>attackers<i> / hr</i></span></div>
+    <!-- This one counts distinct attackers over the selected stats window, so
+         its unit follows that control rather than being pinned to an hour. -->
+    <div class="counter"><b id="c-attackers">0</b><span>attackers<i id="c-attackers-unit"> / hr</i></span></div>
     <div class="counter"><b id="c-events">0</b><span>events<i> / min</i></span></div>
   </div>
 </header>
@@ -39,6 +41,14 @@
      that flows underneath the map. -->
 <div class="sheet">
 
+  <!-- Inside .sheet so the stacked layout puts it directly under the map, where
+       it is the first thing read on a phone. On desktop .sheet is
+       `display: contents` and this is positioned into the band below the map. -->
+  <section class="console" id="threat-console">
+    <h2>Threat activity <span class="hint" id="console-count"></span></h2>
+    <ul id="threat-log"></ul>
+  </section>
+
   <section class="panel panel-left">
     <h2>Live feed</h2>
     <ul id="ticker" class="ticker"></ul>
@@ -47,20 +57,36 @@
   <!-- Each heading is grouped with its list so leftover vertical space is
        shared between the groups rather than pooling as dead space. -->
   <section class="panel panel-right">
-    <div class="grp">
-      <h2>Top origins <small>1h</small></h2>
-      <ul id="top-countries" class="rank"></ul>
+    <!-- One control for the whole rail: comparing panels at different windows
+         would be misleading, and four selectors would be clutter. Populated from
+         the server's STATS_WINDOWS. -->
+    <div class="grp grp-window">
+      <h2>Statistics <span class="seg" id="win-mode"></span></h2>
+      <p class="coverage" id="coverage" hidden></p>
     </div>
     <div class="grp">
-      <h2>Top attackers <small>1h</small></h2>
+      <h2>Top origins <small class="win">1h</small></h2>
+      <ul id="top-countries" class="rank"></ul>
+    </div>
+    <!-- Kept on mobile: "who is hitting me" is the one ranking worth the space
+         on a phone. The rest is desktop analysis. -->
+    <div class="grp grp-attackers">
+      <h2>Top attackers <small class="win">1h</small></h2>
       <ul id="top-attackers" class="rank"></ul>
     </div>
     <div class="grp">
-      <h2>Targeted ports <small>1h</small></h2>
+      <h2>Targeted ports <small class="win">1h</small> <span class="hint-tap">tap a row</span></h2>
       <ul id="top-ports" class="rank"></ul>
     </div>
     <div class="grp">
-      <h2>IDS signatures <small>1h</small></h2>
+      <!-- "threats" drops the ET INFO / POLICY / DNS telemetry your own hosts
+           generate, which otherwise outranks real attacks on volume alone. -->
+      <h2>IDS signatures <small class="win">1h</small>
+        <span class="seg" id="sig-mode">
+          <button type="button" data-mode="threats" class="on" aria-pressed="true">threats</button>
+          <button type="button" data-mode="all" aria-pressed="false">all</button>
+        </span>
+      </h2>
       <ul id="top-signatures" class="rank"></ul>
     </div>
   </section>

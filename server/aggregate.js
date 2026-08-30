@@ -1,5 +1,8 @@
 import { config } from './config.js';
-import { layerOf } from './normalize.js';
+import { layerOf, isThreatAlert, isAttackTarget, farEnd } from './normalize.js';
+import { Rollup } from './rollup.js';
+
+const HOUR_MS = 3_600_000;
 
 /**
  * Turns a raw event stream into something a map can actually render.
@@ -11,7 +14,10 @@ import { layerOf } from './normalize.js';
  * real totals rather than post-collapse ones.
  */
 
-const HOUR_MS = 3600_000;
+// Only what the live per-minute counters need. Rankings come from the rollup,
+// which is why this is 90 seconds and not an hour: holding an hour of raw events
+// is precisely the cost that capped the window at 1h in the first place.
+const RATES_MS = 90_000;
 
 export class Aggregator {
   constructor(opts = {}) {
@@ -20,7 +26,8 @@ export class Aggregator {
 
     this.open = new Map();   // collapse key -> arc
     this.recent = [];        // rendered arcs, newest last, capped at bufferSize
-    this.window = [];        // every event in the last hour, for stats
+    this.rates = [];         // last 90s of events, for the live header counters
+    this.rollup = opts.rollup ?? new Rollup();
     this.totals = { fw: 0, ids: 0, block_in: 0, pass_out: 0, internal: 0, alerts: 0, all: 0 };
     this.startedAt = Date.now();
   }
@@ -37,7 +44,11 @@ export class Aggregator {
   ingest(ev) {
     const now = Date.parse(ev.ts) || Date.now();
 
-    this.window.push({ t: now, ev });
+    this.rates.push({ t: now, ev });
+    // The rollup needs to know which end to attribute a signature to, and
+    // farEnd() is cheap enough to resolve once here rather than per merge.
+    ev.__far__ = { ip: farEnd(ev).ip, dir: ev.dir };
+    this.rollup.ingest(ev, Aggregator.isInboundThreat(ev), now);
     this.totals.all++;
     this.totals[ev.source]++;
     const layer = layerOf(ev);
@@ -57,6 +68,11 @@ export class Aggregator {
     const arc = {
       ...ev,
       layer,
+      // Marked here rather than re-derived in the browser, so the threat console
+      // and the rankings cannot drift apart on what counts as an attack.
+      // Internal alerts qualify too: a LAN host running an amplification scan is
+      // a threat activity even though it is not an inbound attack.
+      threat: Aggregator.isThreat(ev) || (ev.source === 'ids' && isThreatAlert(ev)),
       firstTs: now,
       lastTs: now,
       count: 1,
@@ -67,35 +83,45 @@ export class Aggregator {
     return { type: 'arc', arc };
   }
 
+  /**
+   * Count a historical event into the statistics only.
+   *
+   * Backfilled events must not become arcs - replaying yesterday's attacks
+   * across the map would be a lie - and must not touch the live rates ring or
+   * the session totals, both of which mean "since this process started".
+   */
+  ingestHistory(ev) {
+    ev.__far__ = { ip: farEnd(ev).ip, dir: ev.dir };
+    this.rollup.ingest(ev, Aggregator.isInboundThreat(ev), Date.now());
+  }
+
   prune(now = Date.now()) {
-    const cutoff = now - HOUR_MS;
+    const cutoff = now - RATES_MS;
     let i = 0;
-    while (i < this.window.length && this.window[i].t < cutoff) i++;
-    if (i) this.window.splice(0, i);
+    while (i < this.rates.length && this.rates[i].t < cutoff) i++;
+    if (i) this.rates.splice(0, i);
 
     for (const [key, arc] of this.open) {
       if (now - arc.lastTs > this.collapseMs * 2) this.open.delete(key);
     }
+    this.rollup.roll(now);
   }
 
-  #topOf(fn, limit, since) {
-    const counts = new Map();
-    for (const { t, ev } of this.window) {
-      if (t < since) continue;
-      const k = fn(ev);
-      if (k === null || k === undefined || k === '') continue;
-      counts.set(k, (counts.get(k) || 0) + 1);
-    }
-    return [...counts]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, limit)
-      .map(([key, count]) => ({ key, count }));
-  }
-
-  /** Anything hostile: an inbound block, or any IDS alert. Internal is neither. */
+  /**
+   * Anything hostile: an inbound block, or a threat-class IDS alert. Internal is
+   * neither.
+   *
+   * The alert side is filtered rather than taken wholesale - an inbound "ET INFO
+   * Observed DNS Query" is a record of something happening, not an attack, and
+   * counting it here is what let ordinary hosts appear in "Top attackers".
+   */
   static isThreat(ev) {
     if (ev.dir === 'internal') return false;
-    return (ev.source === 'ids') || (ev.action === 'block' && ev.dir === 'in');
+    if (ev.source === 'ids') return isThreatAlert(ev);
+    // A block only counts as an attack if it was aimed at something. Late
+    // replies from Cloudflare/Google to connections we opened get blocked too,
+    // and used to rank them alongside real scanners on equal footing.
+    return ev.action === 'block' && ev.dir === 'in' && isAttackTarget(ev);
   }
 
   /** Something arriving from the internet and aimed at us. */
@@ -103,39 +129,45 @@ export class Aggregator {
     return ev.dir === 'in' && Aggregator.isThreat(ev);
   }
 
-  stats(now = Date.now()) {
-    this.prune(now);
+  /**
+   * The live half: header counters over the last 60 seconds, straight from the
+   * rates ring so they stay as immediate as they were rather than stepping once
+   * a minute with the rollup.
+   */
+  #liveRates(now) {
     const minAgo = now - 60_000;
-    const hourAgo = now - HOUR_MS;
-
     let blocksMin = 0;
     let alertsMin = 0;
     let eventsMin = 0;
-    const attackers = new Set();
-
-    for (const { t, ev } of this.window) {
-      if (t >= minAgo) {
-        eventsMin++;
-        if (ev.action === 'block' && ev.dir === 'in') blocksMin++;
-        if (ev.source === 'ids') alertsMin++;
-      }
-      if (t >= hourAgo && Aggregator.isInboundThreat(ev)) attackers.add(ev.src.ip);
+    for (const { t, ev } of this.rates) {
+      if (t < minAgo) continue;
+      eventsMin++;
+      if (ev.action === 'block' && ev.dir === 'in') blocksMin++;
+      if (ev.source === 'ids') alertsMin++;
     }
+    return { eventsMin, blocksMin, alertsMin };
+  }
 
-    // The three "who is hitting us" panels are all scoped to inbound threats.
-    // Counting every event instead would fill them with our own outbound traffic
-    // to Cloudflare and rank the home country first.
-    const threatSrc = (pick) => (ev) => (Aggregator.isInboundThreat(ev) ? pick(ev) : null);
-
+  /**
+   * @param {number} windowMs ranking window; the header counters ignore it and
+   *   stay on their live basis, so the top bar reads "now" while the panels read
+   *   whatever period was asked for.
+   */
+  stats(windowMs = HOUR_MS, now = Date.now()) {
+    this.prune(now);
+    const ranks = this.rollup.rankings(windowMs, now);
     return {
       uptimeSec: Math.round((now - this.startedAt) / 1000),
+      windowMs,
+      coverageMs: Math.min(this.rollup.coverageMs, windowMs),
       totals: { ...this.totals },
-      rates: { eventsMin, blocksMin, alertsMin, uniqueAttackersHour: attackers.size },
-      topCountries: this.#topOf(threatSrc((ev) => ev.src.geo?.cc), 8, hourAgo),
-      topAttackers: this.#topOf(threatSrc((ev) => ev.src.ip), 8, hourAgo),
-      topPorts: this.#topOf(threatSrc((ev) => ev.dst.port), 8, hourAgo),
-      // Signatures are useful in every direction, so this one is not scoped.
-      topSignatures: this.#topOf((ev) => ev.signature, 6, hourAgo),
+      rates: {
+        ...this.#liveRates(now),
+        // Distinct attackers over the selected window, not a fixed hour - the
+        // label follows the window so the number is never mislabelled.
+        uniqueAttackersHour: ranks.uniqueAttackers,
+      },
+      ...ranks,
     };
   }
 

@@ -21,11 +21,50 @@ endpoints, so it should work on any reasonably recent release.
 - **Cyan arcs** — outbound traffic. On a typical connection this is ~90% of all
   events, so switch it off when you want only what is hitting you.
 - **Live feed** — recent events with geo, ASN owner, port and signature.
+- **Threat activity** — the same events in plain language, in the band below the
+  map: `10:33:51  69.5.169.89 from Frankfurt am Main, Germany probed port 54121
+  — blocked by the firewall`. The map shows that *something* happened and the
+  feed shows the raw record; neither says what it means. Only hostile events
+  appear, so it stays readable.
 - **Rankings** — top origin countries, top attacker addresses, most-targeted
   ports and most-fired IDS signatures, over a rolling hour.
+- **Attribution** — the ports and signature rankings name *who* is responsible,
+  not just what happened. Each row shows its biggest contributor and expands on
+  click to the top five, with reverse-DNS hostnames where a PTR record exists.
+- **Selectable window** — rankings cover **1h or 24h**, chosen with one control
+  for the whole rail. History is seeded from the firewall's own log at startup,
+  survives restarts, and the panels say so when the window is not yet full
+  rather than captioning ten minutes of data "24h". The header counters stay
+  live regardless: the top bar is *now*, the panels are statistics.
 - **Clickable addresses** — every real address in the feed and the attacker
   rankings links to a reputation lookup (Cloudflare Radar by default,
   configurable via `IP_LOOKUP_URL`). Redacted pseudonyms are never linked.
+
+### What counts as an attack
+
+Both filters exist because the honest answer to "what is hitting me" is much
+smaller than the raw event count, and the noise was outranking the signal.
+
+- **IDS signatures** default to threat classes — `SCAN`, `EXPLOIT`, `TROJAN`,
+  `MALWARE`, `CNC`, `DOS` and similar — and hide the `ET INFO` / `ET POLICY` /
+  `ET DNS` telemetry your own hosts generate. On the author's network that is
+  the difference between 6 signatures and 1: roughly 90% of alerts are Telegram
+  and Discord DNS lookups. The `all` toggle in the panel header shows everything.
+  `IDS_MIN_SEVERITY` sets the bar; `1` restores the unfiltered ranking.
+- **Blocked inbound traffic** counts as an attack only when it was aimed at
+  something. A block that came *from* a well-known service port and landed on a
+  non-service port is the reply leg of a connection you opened, arriving after
+  the state entry expired — not a scan. Without this the rankings fill with
+  Google and Akamai. The test is on the **source** port: judging by destination
+  does not work, because OPNsense is FreeBSD and its ephemeral range starts at
+  10000, with replies observed landing as low as 8836. A scanner picks an
+  ephemeral source port, so genuine probes of high ports are still counted.
+
+Attribution follows the direction of the event, which is not always the source:
+an inbound alert names the sender, an **outbound** alert names the destination
+your host contacted, and an internal alert names the local host that triggered
+it. Each entry is marked `←` inbound, `→` outbound or `·` internal — without
+that, a Telegram server your laptop contacted reads as an attacker.
 
 Every arc has one end anchored on your network. That is what makes it read as an
 attack map rather than a traffic graph.
@@ -135,6 +174,12 @@ matter most:
 | `FW_TZ_OFFSET` | `auto` | See below. |
 | `MAP_CENTER_LON` | `0` | Conventional world map. `home` centres on your own longitude. |
 | `IP_LOOKUP_URL` | Cloudflare Radar | Where addresses link to; `{ip}` is substituted. Empty disables the links. |
+| `IDS_MIN_SEVERITY` | `3` | Threat bar for the signature panel, on the 1–4 scale derived from the ET class. `1` ranks every alert. |
+| `RDNS` | `1` | Resolve attacker addresses to hostnames. Local addresses are never resolved regardless. |
+| `STATS_WINDOWS` | `1h,24h` | Ranking windows offered in the UI; the first is the default. |
+| `STATS_RETAIN_HOURS` | `26` | How much history to keep. Must cover your longest window. |
+| `STATS_PERSIST` | `1` | Keep history across restarts in `data/rollup.json`. |
+| `BACKFILL_ROWS` | `50000` | Firewall log rows read at startup to seed the statistics. `0` disables. Do not go near 400k — it OOMs the firewall. |
 | `COLLAPSE_MS` | `10000` | Window for merging repeat `src → dst:port` hits into one arc. |
 | `MAX_ARCS` | `300` | Hard cap, oldest dropped, so a scan burst cannot stall the renderer. |
 | `REPLAY` | `0` | Replay recent firewall events at 10× to exercise the renderer. |
@@ -200,6 +245,60 @@ Two independent pollers, and no configuration change on the firewall:
 The two loops are deliberately independent: the firewall log is the reliable
 high-rate feed and must not stall because Suricata is slow, restarting or empty.
 
+### Where the statistics come from
+
+The rankings used to walk every raw event in a one-hour window, six times a
+second. That is why the window was an hour — measured on real traffic, at 514
+bytes per event:
+
+| Window | Events held | Cost of one `stats()` | CPU at 1 Hz |
+|---|---|---|---|
+| 1h | 14k | 29 ms | 2.9% of a core |
+| 24h | 346k | 634 ms | 63% |
+| ~3d | 1M | 1705 ms | 170% — never finishes in time |
+
+Events are now counted into **per-minute buckets** as they arrive, so cost scales
+with the number of *distinct* attackers, ports and signatures rather than with
+traffic volume. There are only a few hundred of those whether you look at an hour
+or a day. Two tiers keep the bucket count down: minute resolution for the last
+two hours, folded into hour buckets beyond that.
+
+Measured after the change, holding 24 hours instead of 1:
+
+| | CPU |
+|---|---|
+| 1h window only | **0.25%** of a core |
+| both windows viewed at once | ~0.3% |
+
+Rankings are cached and rebuilt on a schedule proportional to their window — 5 s
+for 1h, longer for 24h — because a day-long ranking cannot visibly change in
+between. The live header counters bypass all of this and are computed from a
+90-second ring, so the page still reads as live.
+
+**Seeding from the firewall log.** On startup the service pulls
+`BACKFILL_ROWS` (50,000, about 4½ hours) from the firewall log and counts them
+into the statistics, so a fresh deploy is not showing two minutes of data under a
+"24h" label. After a restart only the gap since the last save is used. Backfilled
+events never become arcs — replaying yesterday's attacks across the map would be
+a lie — and never touch the header counters, which mean "since this process
+started".
+
+The size is bounded deliberately. The endpoint has no cursor, so paging backwards
+is impossible and one fetch is all there is; measured on OPNsense 26.7.1, 100k
+rows returns ~9 h in 14 s, but **400k exhausts PHP's 1 GB limit and the request
+dies on the firewall**. 50k leaves generous headroom. IDS alerts cannot be
+backfilled at all — `queryAlerts` retains only ~500 records, about half an hour.
+
+**Persistence.** History is written to `data/rollup.json` every five minutes and
+on shutdown, so a redeploy does not reset the panels. **That file contains real,
+unredacted addresses from your network** — `data/` is gitignored in full for
+exactly that reason. Redaction still happens on the way out, so nothing about
+what reaches a browser changes.
+
+One caveat: the 24h window takes its most recent two hours from minute buckets
+and the rest from hour buckets, so its boundary is accurate to about an hour.
+Immaterial for a ranking, worth knowing before reading a total as exact.
+
 ### What the IDS feed can and cannot see
 
 Worth understanding before you go tuning Suricata to catch inbound attacks,
@@ -248,6 +347,15 @@ Capture**, which is a better tool for that job than an IDS.
 - **Flat map, flat arcs.** Arcs take the direct chord between two points. Routing
   “the short way” around the antimeridian is correct on a globe, but on a flat
   map it just looks like an attack flying off the wrong edge.
+- **Mobile is a reduced dashboard, not a shrunken one.** Below 900px the raw
+  ticker and the origin, port and signature panels are dropped entirely, leaving
+  the counters, the map, the plain-language threat log and one ranking. The two
+  questions worth answering on a phone are "is anything attacking me" and "who";
+  the rest is desktop analysis, and squeezing it onto a phone serves nobody.
+- **The threat log fills the map's dead band.** An equirectangular map is fixed
+  at 2:1, so in a taller gap it letterboxes. Rather than leave that strip empty
+  it carries the plain-language log, and the projection measures the console as
+  a boundary so the map moves up instead of hiding behind it.
 - **Layout.** The map is drawn at one uniform scale — stretching an axis to fill
   the box makes the continents visibly wrong — and positioned in the gap between
   the side panels so nothing on it hides behind the UI. The leftover space is not

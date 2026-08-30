@@ -17,6 +17,8 @@
   --legend-h: 56px;
   /* Height the map occupies once the layout stacks (mobile). */
   --map-h: 46vh;
+  /* The plain-language log under the map, in the band its 2:1 aspect leaves free. */
+  --console-h: 172px;
 }
 
 * { box-sizing: border-box; }
@@ -108,17 +110,21 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
 
 .panel-left { left: var(--rail-gap); }
 
-/* space-between spreads the four groups down the full height, so a short list
-   does not leave a block of dead space under the last one. It degrades to
-   normal stacking (plus scrolling) when the content is taller than the panel. */
+/* Groups stack from the top with one consistent rhythm.
+   This used to be space-between, which spread the leftover height as gaps
+   between the groups. That was tolerable with eight-row lists; at five rows it
+   left obvious holes and the headings stopped reading as attached to the list
+   beneath them. Trailing whitespace at the bottom of the rail is fine - a gap
+   in the middle of the content is not. */
 .panel-right {
   right: var(--rail-gap);
   display: flex; flex-direction: column;
-  justify-content: space-between; gap: 10px;
+  justify-content: flex-start; gap: 16px;
 }
 .panel-right .grp { flex: 0 0 auto; }
 
 .panel h2 {
+  display: flex; align-items: center; gap: 6px;
   margin: 0 0 8px; padding-top: 14px;
   font-size: 10px; font-weight: 600; letter-spacing: 0.2em;
   text-transform: uppercase; color: var(--dim);
@@ -159,10 +165,12 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   white-space: normal; overflow-wrap: anywhere;
 }
 
+/* Roomier than the eight-row lists were: five rows left the rail noticeably
+   short, and spending that height on legibility beats leaving it blank. */
 .rank li {
   display: grid; grid-template-columns: 1fr auto; align-items: start;
-  gap: 8px; padding: 4px 6px; position: relative;
-  background: var(--panel); margin-bottom: 2px; border-radius: 3px;
+  gap: 8px; padding: 7px 8px; position: relative;
+  background: var(--panel); margin-bottom: 3px; border-radius: 3px;
 }
 /* Width is set inline from the share of the top value. */
 .rank li::before {
@@ -176,6 +184,96 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
 .rank .k { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .rank .v { color: #fff; font-variant-numeric: tabular-nums; }
 .rank .cc { color: var(--dim); }
+.rank li.empty {
+  display: block; color: var(--dim); font-size: 10px;
+  line-height: 1.45; padding: 6px; background: none;
+}
+
+/* Resolved PTR name, under the address it belongs to. Only rendered when a
+   lookup actually returned one, so this never costs a line to say nothing. */
+.rank .host {
+  display: block; color: var(--dim); font-size: 10px;
+  line-height: 1.3; overflow-wrap: anywhere;
+}
+
+/* ---------- targeted ports: attacker breakdown ---------- */
+
+.rank li.has-sub { cursor: pointer; }
+.rank li.has-sub:hover { background: rgba(20, 34, 58, 0.82); }
+.rank li.has-sub:focus-visible { outline: 1px solid rgba(143, 233, 255, 0.5); outline-offset: 1px; }
+
+/* Both of these span the full row rather than sitting in the label column. */
+.rank .sub-hint, .rank .subrank {
+  grid-column: 1 / -1; position: relative;
+}
+.rank .sub-hint {
+  color: var(--dim); font-size: 10px; line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.rank li.open .sub-hint { display: none; }
+
+.rank .subrank { display: none; list-style: none; margin: 2px 0 0; padding: 0; }
+.rank li.open .subrank { display: block; }
+.rank .subrank li {
+  display: grid; grid-template-columns: 10px auto 1fr auto;
+  gap: 6px; align-items: baseline;
+  padding: 1px 0; background: none; font-size: 10px;
+}
+/* Says which end of the event the address sits on. An outbound alert names the
+   server we contacted, and without this it reads as an attacker. Colour matches
+   the map legend, so the marker means the same thing in both places. */
+.rank .subrank .sdir { text-align: center; color: var(--dim); }
+.rank .subrank li[data-dir="in"] .sdir { color: var(--red); }
+.rank .subrank li[data-dir="out"] .sdir { color: var(--cyan); }
+/* --w is a custom property and therefore inherited, so without this the nested
+   rows would each redraw the parent port's magnitude bar behind themselves. */
+.rank .subrank li::before { content: none; }
+.rank .subrank .sip { color: var(--ink); }
+.rank .subrank .shost { color: var(--dim); overflow-wrap: anywhere; }
+.rank .subrank .sv { color: var(--dim); font-variant-numeric: tabular-nums; }
+
+/* ---------- signature severity ---------- */
+
+/* The bar is the only thing distinguishing a scan from an exploit at a glance,
+   so it carries the derived severity rather than one flat red for everything. */
+.rank li[data-sev="1"]::before { background: rgba(107, 134, 171, 0.16); }
+.rank li[data-sev="2"]::before { background: rgba(34, 211, 238, 0.14); }
+.rank li[data-sev="3"]::before { background: rgba(255, 138, 0, 0.16); }
+.rank li[data-sev="4"]::before { background: rgba(255, 59, 48, 0.20); }
+
+/* Segmented control in a panel heading. */
+.seg { margin-left: auto; display: inline-flex; gap: 1px; }
+.seg button {
+  font: inherit; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--dim); background: rgba(143, 166, 196, 0.10);
+  border: 0; padding: 2px 6px; cursor: pointer;
+}
+.seg button:first-child { border-radius: 3px 0 0 3px; }
+.seg button:last-child { border-radius: 0 3px 3px 0; }
+.seg button:hover { color: var(--ink); }
+.seg button.on { color: #fff; background: rgba(143, 233, 255, 0.22); }
+
+/* A hover affordance is meaningless on touch, and the desktop cursor already
+   says it; this only appears where hover is unavailable. */
+.hint-tap { margin-left: auto; font-size: 9px; letter-spacing: 0.08em; opacity: 0.55; }
+@media (hover: hover) { .hint-tap { display: none; } }
+
+/* ---------- stats window ---------- */
+
+/* Governs the whole rail, so it sits above the panels rather than inside one. */
+.grp-window h2 { margin-bottom: 0; }
+.grp-window .seg button { min-width: 34px; }
+
+/* Says when the numbers do not yet cover the window they are labelled with -
+   after a fresh deploy "7d" is a handful of minutes, and silently captioning it
+   7d would be a lie. */
+.coverage {
+  margin: 6px 0 0; padding: 4px 6px;
+  background: rgba(255, 138, 0, 0.10);
+  border-left: 2px solid var(--amber);
+  border-radius: 0 3px 3px 0;
+  color: var(--dim); font-size: 10px; line-height: 1.4;
+}
 
 /* Flags render as real glyphs on iOS/Android/macOS. Windows has no flag font,
    so those platforms get a country-code chip instead of two squashed letters. */
@@ -204,6 +302,64 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   color: #8fe9ff;
   border-bottom-color: currentColor;
 }
+
+/* ---------- threat console ---------- */
+
+/* Occupies the band under the map, between the two rails. The map is drawn at a
+   fixed 2:1 aspect so it cannot fill a taller gap; rather than letterbox that
+   space, it carries the plain-language log. */
+.console {
+  position: fixed; z-index: 3;
+  left: calc(var(--panel-w) + var(--rail-gap) * 2);
+  right: calc(var(--panel-w) + var(--rail-gap) * 2);
+  bottom: var(--legend-h);
+  height: var(--console-h);
+  display: flex; flex-direction: column;
+  padding: 0 4px 6px;
+}
+.console h2 {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 6px; padding-top: 8px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--dim);
+  border-top: 1px solid var(--line);
+}
+.console h2 .hint { margin-left: auto; letter-spacing: 0.08em; opacity: 0.6; }
+
+.console ul {
+  list-style: none; margin: 0; padding: 0;
+  flex: 1 1 auto; overflow: hidden auto;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  overscroll-behavior: contain;
+  /* Fades the oldest lines instead of cutting them mid-glyph. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 82%, transparent);
+          mask-image: linear-gradient(to bottom, #000 82%, transparent);
+}
+.console ul::-webkit-scrollbar { width: 6px; }
+.console ul::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+
+.console li {
+  display: grid; grid-template-columns: 62px 1fr; gap: 10px;
+  padding: 3px 8px; margin-bottom: 2px;
+  background: var(--panel);
+  border-left: 2px solid var(--c, var(--dim));
+  border-radius: 0 3px 3px 0;
+  line-height: 1.45;
+}
+.console .t { color: var(--dim); font-variant-numeric: tabular-nums; }
+.console .msg { min-width: 0; overflow-wrap: anywhere; }
+.console .msg b { color: #fff; font-weight: 600; }
+.console .rep {
+  color: var(--amber); font-size: 10px;
+  padding: 0 4px; border-radius: 3px; background: rgba(255, 138, 0, 0.14);
+}
+/* Colour-matched to the map legend, so a line reads the same as its arc. */
+.console .tl-blocked  { --c: var(--red); }
+.console .tl-alert    { --c: var(--magenta); }
+.console .tl-internal { --c: #8fa6c4; }
+
+.console a { color: inherit; text-decoration: none; border-bottom: 1px dotted rgba(143, 233, 255, 0.45); }
+.console a:hover { color: #8fe9ff; border-bottom-color: currentColor; }
 
 /* ---------- legend ---------- */
 
@@ -291,6 +447,27 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
     padding-bottom: calc(var(--legend-h) + 24px + env(safe-area-inset-bottom));
     background: linear-gradient(to bottom, rgba(4, 7, 15, 0.92), var(--bg) 40px);
   }
+
+  /* A phone gets a deliberately reduced dashboard, not a squeezed copy of the
+     desktop one. The questions worth answering on a small screen are "is
+     anything attacking me" and "who" - so the plain-language log leads, one
+     ranking follows, and the rest is left to the desktop.
+     Hidden panels are not rendered smaller, they are not rendered: the raw
+     ticker, origins, targeted ports and signature lists all stay in the DOM but
+     out of the layout, so switching to a wide window brings them straight back. */
+  .console {
+    position: static;
+    grid-column: 1 / -1;
+    height: auto; padding: 0;
+  }
+  .console ul { max-height: 46vh; }
+
+  /* Scoped to .sheet purely for specificity: the generic `.panel { display:
+     block }` below is equally specific and would otherwise win on source order. */
+  .sheet .panel-left { display: none; }
+  .panel-right .grp { display: none; }
+  .panel-right .grp-window,
+  .panel-right .grp-attackers { display: block; }
 
   .panel {
     position: static;

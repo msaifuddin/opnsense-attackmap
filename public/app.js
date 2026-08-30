@@ -43,9 +43,12 @@ function chromeInsets(canvasRect) {
   const bar = rectOf('.bar');
   if (bar && bar.bottom > canvasRect.top) inset.t = Math.max(inset.t, bar.bottom - canvasRect.top + gap);
 
-  const legend = rectOf('.legend');
-  if (legend && legend.top < canvasRect.bottom) {
-    inset.b = Math.max(inset.b, canvasRect.bottom - legend.top + gap);
+  // The console sits above the legend, so it is the lower boundary when present.
+  // Without this the map would draw behind it rather than moving up out of the
+  // way - which is the whole point of putting it in the map's dead band.
+  for (const sel of ['.legend', '.console']) {
+    const r = rectOf(sel);
+    if (r && r.top < canvasRect.bottom) inset.b = Math.max(inset.b, canvasRect.bottom - r.top + gap);
   }
 
   const left = rectOf('.panel-left');
@@ -105,8 +108,9 @@ const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour12: false })
 function tickerRow(arc) {
   const inbound = arc.dir === 'in';
   const internal = arc.dir === 'internal';
-  // For internal traffic neither end is "far"; the source host is what matters.
-  const far = internal ? arc.src : inbound ? arc.src : arc.dst;
+  // Same rule the ranking panels attribute by (server/normalize.js farEnd): for
+  // internal traffic neither end is "far", so the source host is what matters.
+  const far = arc.dir === 'out' ? arc.dst : arc.src;
   const geo = internal ? {} : far.geo || {};
   const li = document.createElement('li');
   li.style.setProperty('--c', `rgb(${colorFor(arc).join(',')})`);
@@ -170,26 +174,319 @@ function ipHtml(ip) {
   return `<a href="${href}" target="_blank" rel="noopener noreferrer">${safe}</a>`;
 }
 
+// ---------- threat console ----------
+
+/**
+ * Plain-language rendering of a hostile event.
+ *
+ * The map shows that something happened and the ticker shows the raw record;
+ * neither says what it *means*. "ET SCAN Potential SSH Scan" assumes you already
+ * know, and the point of this line is that it should read to someone who does
+ * not.
+ */
+
+// What an attacker is after when they knock on a given port. Only ports where
+// the intent is genuinely unambiguous - guessing beyond that would be inventing
+// detail the log does not support.
+const PORT_INTENT = {
+  21: 'FTP file transfer', 22: 'SSH remote login', 23: 'telnet remote login',
+  25: 'the mail server', 53: 'the DNS service', 80: 'the web server',
+  110: 'POP3 mail', 143: 'IMAP mail', 443: 'the web server over HTTPS',
+  445: 'Windows file sharing', 587: 'the mail server', 993: 'IMAP mail',
+  1433: 'a Microsoft SQL database', 1900: 'UPnP discovery',
+  3306: 'a MySQL database', 3389: 'Windows Remote Desktop',
+  5060: 'the VoIP/SIP service', 5432: 'a PostgreSQL database',
+  5900: 'VNC remote desktop', 6379: 'a Redis database',
+  8080: 'the web server', 8443: 'the web server over HTTPS',
+  9200: 'an Elasticsearch database', 7547: 'the router management port',
+  2375: 'the Docker control socket', 27017: 'a MongoDB database',
+};
+
+// Emerging Threats class -> what the rule is actually reporting.
+const CATEGORY_INTENT = {
+  SCAN: 'was scanning for a way in',
+  DOS: 'was involved in denial-of-service traffic',
+  EXPLOIT: 'tried to exploit a known vulnerability',
+  EXPLOIT_KIT: 'tried to deliver malware through an exploit kit',
+  TROJAN: 'showed signs of malware talking to its operator',
+  MALWARE: 'showed signs of malware activity',
+  CNC: 'contacted a known malware command-and-control server',
+  WORM: 'showed worm-like spreading behaviour',
+  PHISHING: 'was involved in a phishing attempt',
+  SHELLCODE: 'sent an attack payload',
+  WEB_SERVER: 'attacked the web server',
+  WEB_SPECIFIC_APPS: 'attacked a web application',
+  ATTACK_RESPONSE: 'looked like a successful compromise responding',
+  COINMINER: 'showed cryptocurrency mining activity',
+  MOBILE_MALWARE: 'showed mobile malware activity',
+  ADWARE_PUP: 'showed adware or unwanted-program activity',
+  CURRENT_EVENTS: 'matched an active threat campaign',
+};
+
+const place = (geo) => {
+  const where = [geo?.city, geo?.country].filter(Boolean).join(', ');
+  return where ? `from ${where}` : '';
+};
+
+/** "port 23 (telnet remote login)" or just "port 44321". */
+function portPhrase(port) {
+  if (!port) return null;
+  return PORT_INTENT[port] ? `${PORT_INTENT[port]} on port ${port}` : `port ${port}`;
+}
+
+function threatSentence(arc) {
+  const internal = arc.dir === 'internal';
+  const far = arc.dir === 'out' ? arc.dst : arc.src;
+  const who = far.host ? `${far.ip} (${far.host})` : far.ip;
+  // Location belongs next to the address it describes. Appended to the end it
+  // reads as though the port were in Minneapolis.
+  const from = place(far.geo);
+
+  if (arc.source === 'ids') {
+    const what = CATEGORY_INTENT[arc.category] ?? 'triggered an intrusion-detection rule';
+    if (internal) {
+      // Both ends are ours, so "attacker" would be misleading - this is one of
+      // your own machines misbehaving, which is worth saying differently.
+      return { who: arc.src.ip, text: `${what} — this is a device on your own network`, kind: 'internal' };
+    }
+    const text = arc.dir === 'out'
+      ? `${from} was contacted by a device on your network, and ${what}`
+      : `${from} ${what}`;
+    return { who, text: text.trim(), kind: 'alert' };
+  }
+
+  // Firewall block: inbound, aimed at something.
+  const target = portPhrase(arc.dst.port) ?? `your network over ${arc.proto}`;
+  const verb = arc.dst.port && PORT_INTENT[arc.dst.port] ? 'tried to reach' : 'probed';
+  return {
+    who,
+    text: `${from} ${verb} ${target} — blocked by the firewall`.trim(),
+    kind: 'blocked',
+  };
+}
+
+const threatLog = $('threat-log');
+let threatSeen = 0;
+
+function pushThreat(arc) {
+  if (!arc.threat) return;
+  const { who, text, kind } = threatSentence(arc);
+  const li = document.createElement('li');
+  li.className = `tl-${kind}`;
+  li.innerHTML =
+    `<span class="t">${fmtTime(arc.ts)}</span>` +
+    `<span class="msg"><b>${ipHtml(who)}</b> ${escapeHtml(text)}` +
+    (arc.count > 1 ? ` <span class="rep">×${arc.count}</span>` : '') +
+    `</span>`;
+  li.title = arc.signature || `${arc.proto} → ${arc.dst.port ?? ''}`;
+  threatLog.prepend(li);
+  while (threatLog.children.length > 60) threatLog.lastElementChild.remove();
+  const c = $('console-count');
+  if (c) c.textContent = `${++threatSeen} since load`;
+}
+
 const ticker = $('ticker');
 function pushTicker(arc) {
   ticker.prepend(tickerRow(arc));
   while (ticker.children.length > 40) ticker.lastElementChild.remove();
 }
 
+function rankItem(el, { keyHtml, count, max, title }) {
+  const li = document.createElement('li');
+  li.style.setProperty('--w', `${(count / max) * 100}%`);
+  li.innerHTML = `<span class="k">${keyHtml}</span><span class="v">${count}</span>`;
+  if (title) li.title = title;
+  el.appendChild(li);
+  return li;
+}
+
+function emptyRow(el, text) {
+  const li = document.createElement('li');
+  li.className = 'empty';
+  li.textContent = text;
+  el.replaceChildren(li);
+}
+
 function renderRank(el, rows, decorate = (k) => escapeHtml(String(k))) {
   const max = rows[0]?.count || 1;
-  el.replaceChildren(
-    ...rows.map(({ key, count }) => {
-      const li = document.createElement('li');
-      li.style.setProperty('--w', `${(count / max) * 100}%`);
-      li.innerHTML = `<span class="k">${decorate(key)}</span><span class="v">${count}</span>`;
-      li.title = `${key} — ${count}`;
-      return li;
-    })
-  );
+  el.replaceChildren();
+  for (const { key, count } of rows) {
+    rankItem(el, { keyHtml: decorate(key), count, max, title: `${key} — ${count}` });
+  }
+}
+
+/**
+ * A hostname line is only drawn when a PTR actually resolved. Most scanner
+ * addresses have none, and a column of "(no PTR)" would spend a line each to say
+ * nothing; the tooltip still says so explicitly.
+ */
+const hostLine = (host) => (host ? `<span class="host">${escapeHtml(host)}</span>` : '');
+const hostTitle = (host) => host || 'no PTR record';
+
+function renderAttackers(el, rows) {
+  const max = rows[0]?.count || 1;
+  el.replaceChildren();
+  for (const { key, count, host } of rows) {
+    rankItem(el, {
+      keyHtml: ipHtml(key) + hostLine(host),
+      count,
+      max,
+      title: `${key}\n${hostTitle(host)}\n${count} hits — 1h`,
+    });
+  }
+}
+
+// Rows the operator has expanded, per panel. Held out here because renderStats
+// rebuilds both lists every second - without this an expanded row would snap
+// shut on the next stats tick, mid-read.
+const expandedPorts = new Set();
+const expandedSigs = new Set();
+
+/**
+ * Which end of the event an attributed address sits on. Without this an outbound
+ * alert's destination reads as an attacker - "149.154.166.110" under a Telegram
+ * signature is a server one of our own hosts contacted, not someone hitting us.
+ */
+const DIR_MARK = { in: '←', out: '→', internal: '·' };
+const DIR_WORD = { in: 'inbound, they contacted us', out: 'outbound, we contacted them', internal: 'internal' };
+
+function portLabel(p) {
+  return `${p}${PORT_NAMES[p] ? ` <span class="cc">${PORT_NAMES[p]}</span>` : ''}`;
+}
+
+/**
+ * Attach the "who" breakdown to a ranking row: one dim line naming the biggest
+ * contributor, expanding on click to the full list. Shared by the ports and
+ * signature panels, which ask the same question of different keys.
+ */
+function attachSources(li, key, sources, expanded, what) {
+  if (!sources.length) return;
+
+  li.classList.add('has-sub');
+  li.dataset.key = key;
+  li.tabIndex = 0;
+  li.setAttribute('role', 'button');
+
+  // Collapsed: name the biggest contributor so the row is useful without a
+  // click. Plain text, not a link - the whole row is a toggle here.
+  const top = sources[0];
+  const hint = document.createElement('span');
+  hint.className = 'sub-hint';
+  hint.textContent = `↳ ${DIR_MARK[top.dir] ?? ''} ${top.ip}${top.host ? ` · ${top.host}` : ''} · ${top.count}`;
+  li.appendChild(hint);
+
+  const sub = document.createElement('ul');
+  sub.className = 'subrank';
+  sub.innerHTML = sources.map((s) => (
+    `<li data-dir="${escapeHtml(s.dir ?? '')}" title="${escapeHtml(`${s.ip}\n${hostTitle(s.host)}\n${DIR_WORD[s.dir] ?? ''}\n${s.count} × ${what}`)}">` +
+      `<span class="sdir">${DIR_MARK[s.dir] ?? ''}</span>` +
+      `<span class="sip">${ipHtml(s.ip)}</span>` +
+      `<span class="shost">${s.host ? escapeHtml(s.host) : '—'}</span>` +
+      `<span class="sv">${s.count}</span>` +
+    `</li>`
+  )).join('');
+  li.appendChild(sub);
+
+  const open = expanded.has(String(key));
+  li.classList.toggle('open', open);
+  li.setAttribute('aria-expanded', String(open));
+}
+
+function toggleRow(li, expanded) {
+  const key = li.dataset.key;
+  const open = !li.classList.contains('open');
+  li.classList.toggle('open', open);
+  li.setAttribute('aria-expanded', String(open));
+  if (open) expanded.add(key); else expanded.delete(key);
+}
+
+/** Click/keyboard expansion, delegated because the list is replaced every second. */
+function wireExpansion(el, expanded) {
+  el.addEventListener('click', (e) => {
+    // Let a link through: an expanded row's addresses are reputation lookups,
+    // and following one should not also collapse the row behind it.
+    if (e.target.closest('a')) return;
+    const li = e.target.closest('li.has-sub');
+    if (li) toggleRow(li, expanded);
+  });
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const li = e.target.closest('li.has-sub');
+    if (!li) return;
+    e.preventDefault();
+    toggleRow(li, expanded);
+  });
+}
+
+function renderPorts(el, rows) {
+  const max = rows[0]?.count || 1;
+  el.replaceChildren();
+  for (const { key, count, sources = [] } of rows) {
+    const li = rankItem(el, {
+      keyHtml: portLabel(key),
+      count,
+      max,
+      title: `port ${key} — ${count} hits, 1h`,
+    });
+    attachSources(li, key, sources, expandedPorts, `port ${key}`);
+  }
+}
+
+const SEV_NAME = { 1: 'info', 2: 'low', 3: 'high', 4: 'critical' };
+
+// Which signature list the panel is showing. Threats is the default: the
+// unfiltered list is dominated by your own hosts' telemetry.
+let sigMode = 'threats';
+
+function renderSignatures(el, rows) {
+  if (!rows.length) {
+    emptyRow(el, sigMode === 'threats'
+      ? 'no threat-class alerts in the last hour — switch to “all” to see telemetry'
+      : 'no IDS alerts in the last hour');
+    return;
+  }
+  const max = rows[0]?.count || 1;
+  el.replaceChildren();
+  for (const { key, count, severity, category, sources = [] } of rows) {
+    const li = rankItem(el, {
+      // The ET prefix is on every rule and carries no information in a list of
+      // ET rules, so the class token leads instead.
+      keyHtml: escapeHtml(String(key).replace(/^ET\s+/, '')),
+      count,
+      max,
+      title: `${key}\n${category ?? 'unclassified'} · ${SEV_NAME[severity] ?? 'unknown'}\n${count} in 1h`,
+    });
+    li.dataset.sev = String(severity ?? 2);
+    attachSources(li, key, sources, expandedSigs, 'this signature');
+  }
+}
+
+let lastStats = null;
+
+/**
+ * How much history actually backs the selected window. After a fresh deploy the
+ * rollup holds minutes, and captioning that "7d" would be a lie - so the panel
+ * says so until the window has genuinely filled.
+ */
+function renderCoverage(s) {
+  const el = $('coverage');
+  if (!el) return;
+  const covered = s.coverageMs ?? 0;
+  const asked = s.windowMs ?? 0;
+  // A little slack, so it stops nagging the moment it is essentially full.
+  const partial = asked > 0 && covered < asked * 0.95;
+  const parts = [];
+  if (partial) {
+    const h = covered / 3600000;
+    parts.push(`only ${h < 1 ? `${Math.max(1, Math.round(h * 60))}m` : `${h.toFixed(1)}h`} of history so far`);
+  }
+  if (s.truncated) parts.push('ranking approximate — capped during a burst');
+  el.textContent = parts.join(' · ');
+  el.hidden = !parts.length;
 }
 
 function renderStats(s) {
+  lastStats = s;
   $('c-blocks').textContent = s.rates.blocksMin;
   $('c-alerts').textContent = s.rates.alertsMin;
   $('c-attackers').textContent = s.rates.uniqueAttackersHour;
@@ -198,9 +495,10 @@ function renderStats(s) {
   // In text mode the chip already shows the code, so the duplicate label is
   // hidden by CSS rather than built differently here.
   renderRank($('top-countries'), s.topCountries, (cc) => `${flagHtml(cc)}<span class="cc">${escapeHtml(cc)}</span>`);
-  renderRank($('top-attackers'), s.topAttackers, ipHtml);
-  renderRank($('top-ports'), s.topPorts, (p) => `${p}${PORT_NAMES[p] ? ` <span class="cc">${PORT_NAMES[p]}</span>` : ''}`);
-  renderRank($('top-signatures'), s.topSignatures, (sig) => escapeHtml(String(sig).replace(/^ET\s+/, '')));
+  renderAttackers($('top-attackers'), s.topAttackers);
+  renderPorts($('top-ports'), s.topPorts);
+  renderSignatures($('top-signatures'), (sigMode === 'all' ? s.topSignaturesAll : s.topSignatures) ?? []);
+  renderCoverage(s);
 }
 
 // ---------- websocket ----------
@@ -218,7 +516,13 @@ function connect() {
   const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   ws = new WebSocket(url);
 
-  ws.onopen = () => { retry = 0; setConn('live', 'connected'); };
+  ws.onopen = () => {
+    retry = 0;
+    setConn('live', 'connected');
+    // Re-assert the remembered window: the server defaults a fresh socket to the
+    // first one, and a reconnect must not silently reset the panels.
+    if (statsWindow) ws.send(JSON.stringify({ type: 'window', window: statsWindow }));
+  };
 
   ws.onclose = () => {
     setConn('down', 'disconnected — reconnecting…');
@@ -241,6 +545,9 @@ function connect() {
         }
         layer.configure({ proj, dpr: Math.min(devicePixelRatio || 1, 2), maxArcs: msg.maxArcs, home: msg.home });
 
+        if (Array.isArray(msg.windows) && msg.windows.length) {
+          buildWindowControl(msg.windows, msg.window ?? msg.windows[0]);
+        }
         ipLookupUrl = msg.ipLookupUrl || '';
         if (msg.title) $('site-title').textContent = msg.title;
         if (msg.pageTitle) document.title = msg.pageTitle;
@@ -259,9 +566,14 @@ function connect() {
       case 'snapshot': {
         layer.clear();
         ticker.replaceChildren();
+        threatLog.replaceChildren();
+        threatSeen = 0;
         // Newest last in the buffer; show oldest first so the ticker reads
         // top-newest after prepending.
-        for (const arc of msg.arcs) if (visible(arc)) pushTicker(arc);
+        for (const arc of msg.arcs) {
+          if (visible(arc)) pushTicker(arc);
+          pushThreat(arc);
+        }
         renderStats(msg.stats);
         break;
       }
@@ -271,6 +583,7 @@ function connect() {
         // there is no arc to draw - they only make sense in the feed.
         if (msg.arc.layer !== 'internal') layer.add(msg.arc);
         pushTicker(msg.arc);
+        pushThreat(msg.arc);
         break;
       }
       case 'bump':
@@ -287,6 +600,64 @@ function connect() {
       }
     }
   };
+}
+
+// ---------- panel interaction ----------
+
+wireExpansion($('top-ports'), expandedPorts);
+wireExpansion($('top-signatures'), expandedSigs);
+
+// ---------- stats window ----------
+
+// Remembered per browser, so reloading does not throw you back to 1h.
+const WINDOW_KEY = 'attackmap.window';
+let statsWindow = (() => {
+  try { return localStorage.getItem(WINDOW_KEY) || ''; } catch { return ''; }
+})();
+
+function setWindow(w, { tell = true } = {}) {
+  statsWindow = w;
+  try { localStorage.setItem(WINDOW_KEY, w); } catch { /* private mode */ }
+  for (const b of document.querySelectorAll('#win-mode button')) {
+    b.classList.toggle('on', b.dataset.window === w);
+    b.setAttribute('aria-pressed', String(b.dataset.window === w));
+  }
+  // The per-panel captions follow the control, so a number is never shown under
+  // a window label it does not belong to. Same for the attacker counter's unit:
+  // it counts distinct attackers over this window, and leaving it reading "/ hr"
+  // beside a 24h figure would simply be wrong.
+  for (const el of document.querySelectorAll('.grp h2 small.win')) el.textContent = w;
+  const unit = $('c-attackers-unit');
+  if (unit) unit.textContent = ` / ${w}`;
+  if (tell && ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'window', window: w }));
+  }
+}
+
+/** Built from the server's list rather than hardcoded, so STATS_WINDOWS drives it. */
+function buildWindowControl(windows, active) {
+  const el = $('win-mode');
+  el.replaceChildren(...windows.map((w) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.window = w;
+    b.textContent = w;
+    b.addEventListener('click', () => setWindow(w));
+    return b;
+  }));
+  setWindow(windows.includes(statsWindow) ? statsWindow : active, { tell: false });
+}
+
+for (const btn of document.querySelectorAll('#sig-mode button')) {
+  btn.addEventListener('click', () => {
+    sigMode = btn.dataset.mode;
+    for (const b of document.querySelectorAll('#sig-mode button')) {
+      b.classList.toggle('on', b === btn);
+      b.setAttribute('aria-pressed', String(b === btn));
+    }
+    // Re-render immediately rather than waiting up to a second for the next tick.
+    if (lastStats) renderStats(lastStats);
+  });
 }
 
 // ---------- layer toggles ----------

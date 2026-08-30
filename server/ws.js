@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
  * pollers.
  */
 export class Hub {
-  constructor(server, { onConnect }) {
+  constructor(server, { onConnect, onMessage }) {
     this.wss = new WebSocketServer({ server, path: '/ws' });
     this.onConnect = onConnect;
 
@@ -20,7 +20,16 @@ export class Hub {
       const ip = req.socket.remoteAddress;
       console.log(`[ws] client connected (${ip}), ${this.wss.clients.size} total`);
       ws.on('close', () => console.log(`[ws] client disconnected, ${this.wss.clients.size} total`));
-      for (const msg of this.onConnect()) this.#send(ws, msg);
+      // Clients talk back only to choose a stats window. Anything malformed is
+      // ignored rather than allowed to throw inside the socket handler.
+      ws.on('message', (data) => {
+        if (!onMessage) return;
+        try {
+          const msg = JSON.parse(String(data).slice(0, 4096));
+          for (const out of onMessage(msg, ws) ?? []) this.#send(ws, out);
+        } catch { /* not our protocol */ }
+      });
+      for (const msg of this.onConnect(ws)) this.#send(ws, msg);
     });
 
     this.heartbeat = setInterval(() => {
@@ -45,6 +54,24 @@ export class Hub {
     for (const ws of this.wss.clients) {
       if (ws.readyState !== WebSocket.OPEN) continue;
       if (ws.bufferedAmount > 1_000_000) { ws.terminate(); continue; }
+      ws.send(payload);
+    }
+  }
+
+  /**
+   * Send a per-client message. `build` is called once per distinct value of
+   * `keyOf(ws)` and the payload reused, so N clients watching the same stats
+   * window cost one serialisation rather than N.
+   */
+  each(keyOf, build) {
+    if (!this.wss.clients.size) return;
+    const payloads = new Map();
+    for (const ws of this.wss.clients) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      if (ws.bufferedAmount > 1_000_000) { ws.terminate(); continue; }
+      const key = keyOf(ws);
+      let payload = payloads.get(key);
+      if (payload === undefined) payloads.set(key, (payload = JSON.stringify(build(key))));
       ws.send(payload);
     }
   }

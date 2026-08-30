@@ -1,5 +1,14 @@
 node_modules
+.git
 .env
 *.log
-data/*.mmdb
-.git
+*.tar.gz
+
+# Runtime state: the GeoLite2 databases (~74 MB) and rollup.json, which holds
+# real unredacted addresses from the network. The image never copies data/ in
+# any case - this keeps it out of the build context and, more to the point, out
+# of any tarball uploaded to a registry or to Portainer.
+data/
+
+# Carries live API credentials.
+docker-compose.nas.yml

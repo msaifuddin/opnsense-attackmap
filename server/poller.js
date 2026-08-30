@@ -6,7 +6,7 @@ import {
   normalizeFw, normalizeIds, fwTimestampToDate,
   setFwTzOffsetMinutes, detectFwTzOffset, formatTzOffset,
 } from './normalize.js';
-import { geoLookup, initGeo, geoMode, geoProviderDomain } from './geo.js';
+import { geoLookup, geoCached, initGeo, geoMode, geoProviderDomain } from './geo.js';
 
 /**
  * Owns both feeds and turns them into geo-enriched, deduped events.
@@ -55,6 +55,9 @@ export class Pipeline extends EventEmitter {
     console.log(`[pipeline] wan=${this.wanIp ?? 'unknown'} home=${this.homeGeo.lat.toFixed(2)},${this.homeGeo.lon.toFixed(2)} geo=${geoMode()}`);
 
     this.running = true;
+    // Boundary between "history" and "live", so backfill never double-counts
+    // events the pollers have already ingested.
+    this.startedAt = Date.now();
 
     if (config.replay.enabled) {
       this.#replay();
@@ -203,6 +206,59 @@ export class Pipeline extends EventEmitter {
     // sanitises geo on endpoints flagged as home, and these are not.
     // Unlocatable addresses simply have no position; the client skips the arc.
     return (await geoLookup(ip)) ?? null;
+  }
+
+  /**
+   * Seed the statistics from the firewall log's own history.
+   *
+   * Without this a fresh deploy shows two minutes of data under a "24h" label,
+   * which is the one thing the panels must not do. Events are handed to a
+   * callback rather than emitted: this is history, so it must reach the rollup
+   * without replaying old attacks as arcs on the map.
+   *
+   * Bounded on purpose. The endpoint has no cursor, so paging backwards is not
+   * possible and one fetch is all we get - and asking for too much kills the
+   * request server-side: 400k rows exhausts PHP's 1 GB limit on the firewall.
+   *
+   * @param {(t:number)=>boolean} isGap true when that moment has no counts yet.
+   *   Restored history is therefore left alone and only the holes are filled -
+   *   both the period before the service ever ran and any downtime since.
+   */
+  async backfill(onEvents, isGap) {
+    const limit = config.stats.backfillRows;
+    if (!limit || !this.running) return null;
+
+    const t0 = Date.now();
+    const rows = await this.client.fwLog({ limit });
+    if (!rows.length) return null;
+
+    const events = [];
+    for (const row of rows.reverse()) {
+      const ev = normalizeFw(row, { isHome: this.isHome });
+      const t = Date.parse(ev.ts);
+      if (!Number.isFinite(t) || !isGap(t)) continue;
+      // Do not re-count what the live poller has already seen since startup.
+      if (t >= this.startedAt) continue;
+      events.push(ev);
+    }
+    if (!events.length) return null;
+
+    // Geo-enrich so the origins panel covers history too. Sequentially and only
+    // against a local database: tens of thousands of addresses would take days
+    // through the ip-api fallback at ~15 requests/minute, so there we use
+    // whatever is already cached and leave the rest unplaced rather than
+    // queueing a backlog the live path would then be stuck behind.
+    const local = geoMode() === 'mmdb' || geoMode() === 'mmdb+asn';
+    for (const ev of events) {
+      ev.src.geo = local ? await this.#geoFor(ev.src.ip) : (geoCached(ev.src.ip) ?? null);
+      ev.dst.geo = local ? await this.#geoFor(ev.dst.ip) : (geoCached(ev.dst.ip) ?? null);
+      ev.src.home = this.isHome(ev.src.ip);
+      ev.dst.home = this.isHome(ev.dst.ip);
+    }
+    onEvents(events);
+
+    const spanH = (Date.parse(events[events.length - 1].ts) - Date.parse(events[0].ts)) / 3_600_000;
+    return { rows: rows.length, used: events.length, spanH, ms: Date.now() - t0 };
   }
 
   /** Feed historical firewall events back at speed, to exercise the renderer. */

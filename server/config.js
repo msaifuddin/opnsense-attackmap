@@ -53,6 +53,15 @@ export function parseTzOffset(spec) {
   return sign * (Number(m[2]) * 60 + Number(m[3] || 0));
 }
 
+/** "90m" / "24h" / "7d" -> milliseconds. Returns null if it is not a duration. */
+export function parseWindow(spec) {
+  const m = /^(\d+)\s*([mhd])$/.exec(String(spec || '').trim().toLowerCase());
+  if (!m) return null;
+  const mult = { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2]];
+  const ms = Number(m[1]) * mult;
+  return ms > 0 ? ms : null;
+}
+
 // "auto" (the default) derives the offset at startup by comparing a firewall
 // log timestamp to the current time. Hard-coding a default here would be wrong
 // for everyone who does not share the author's timezone.
@@ -119,6 +128,48 @@ export const config = {
     user: str('OPNSENSE_USER'),
     pass: str('OPNSENSE_PASS'),
     tlsInsecure: bool('TLS_INSECURE', true),
+  },
+  // Ranking panels are computed from time-bucketed counters, so their cost
+  // scales with the number of distinct attackers rather than with traffic
+  // volume - which is what makes a week affordable when an hour of raw events
+  // was already the ceiling.
+  stats: {
+    // Windows offered in the UI, shortest first. The first is the default.
+    windows: list('STATS_WINDOWS', ['1h', '24h']),
+    // Must cover the longest window above. A little headroom, so the oldest
+    // bucket is not being evicted at the exact moment the 24h view asks for it.
+    retainHours: num('STATS_RETAIN_HOURS', 26),
+    // History survives restarts. The file holds real, unredacted addresses from
+    // your network - it lives in data/, which is gitignored, and redaction still
+    // happens on the way out so nothing changes on the wire.
+    persist: bool('STATS_PERSIST', true),
+    file: str('STATS_FILE', './data/rollup.json'),
+    saveEveryMs: num('STATS_SAVE_MS', 300_000),
+    // Rows pulled from the firewall log at startup to seed the statistics, so a
+    // fresh deploy does not show two minutes of data under a "24h" label. Only
+    // the gap since the last save is used; the rest is discarded.
+    //
+    // Keep this well clear of the firewall's limits: measured on OPNsense
+    // 26.7.1, 100k rows returns ~9h in 14s, but 400k exhausts PHP's 1 GB memory
+    // limit and the request dies server-side. 50k is roughly 4.5h with room for
+    // a much higher event rate than the box currently sees.
+    backfillRows: num('BACKFILL_ROWS', 50_000),
+  },
+  ids: {
+    // What counts as a threat rather than telemetry, on the 1-4 scale
+    // classifySignature() derives from the ET class token. 3 keeps SCAN,
+    // EXPLOIT, TROJAN, MALWARE, CNC, DOS and friends while dropping the INFO /
+    // POLICY / DNS / TLS / CHAT chatter your own hosts generate. Set 1 to rank
+    // every alert, which is what the panel used to do.
+    minSeverity: num('IDS_MIN_SEVERITY', 3),
+  },
+  // Resolve attacker addresses to hostnames for the ranking panels. Turning
+  // this off is a reasonable choice when publishing: PTR queries tell your
+  // resolver chain which addresses you are inspecting, the same class of
+  // disclosure IP_LOOKUP_URL carries. Local addresses are never resolved
+  // regardless of this setting.
+  rdns: {
+    enabled: bool('RDNS', true),
   },
   poll: {
     fwMs: num('FW_POLL_MS', 2000),

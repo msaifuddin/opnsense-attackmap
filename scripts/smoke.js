@@ -11,6 +11,7 @@ import { OPNsenseClient } from '../server/opnsense.js';
 import { config } from '../server/config.js';
 import {
   fwTimestampToDate, detectFwTzOffset, formatTzOffset, setFwTzOffsetMinutes,
+  normalizeIds, isThreatAlert, classifySignature,
 } from '../server/normalize.js';
 
 const ok = (m) => console.log(`  \x1b[32mPASS\x1b[0m ${m}`);
@@ -114,6 +115,23 @@ try {
   for (const r of alerts.rows) sigs[r.alert] = (sigs[r.alert] || 0) + 1;
   Object.entries(sigs).sort((a, b) => b[1] - a[1]).slice(0, 5)
     .forEach(([s, n]) => info(`  ${String(n).padStart(4)}  ${s}`));
+
+  // The "IDS signatures" panel ranks threat-class alerts only. If that filter
+  // empties the panel on this box, it should be visible here as a number rather
+  // than as a mysteriously blank list in the UI.
+  const events = alerts.rows.map((r) => normalizeIds(r, { isHome: () => false }));
+  const threats = events.filter(isThreatAlert);
+  const pct = alerts.rows.length ? Math.round((threats.length / alerts.rows.length) * 100) : 0;
+  info(`threat-class (IDS_MIN_SEVERITY=${config.ids.minSeverity}): ${threats.length}/${alerts.rows.length} alerts (${pct}%)`);
+  if (!threats.length && alerts.rows.length) {
+    info('^ every current alert is telemetry (INFO/POLICY/DNS/TLS); the panel will show its empty state until a real threat lands');
+  }
+  const byClass = {};
+  for (const r of alerts.rows) {
+    const { category } = classifySignature(r.alert);
+    byClass[category] = (byClass[category] || 0) + 1;
+  }
+  info(`classes: ${Object.entries(byClass).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(' ')}`);
 } catch (e) {
   failures++;
   bad(`queryAlerts threw: ${e.message}`);
