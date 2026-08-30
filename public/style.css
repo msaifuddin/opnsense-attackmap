@@ -484,9 +484,21 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
     transition: transform 0.15s ease;
     flex: 0 0 auto;
   }
-  /* Only the last flex item may claim the free space, or the chevron drifts. */
+  /* The chevron owns the right edge on EVERY collapsible heading.
+     Exactly one item may claim the free space, and it has to be the same item
+     in every header or the chevron lands in a different place per section -
+     which is what happened when .seg and .hint-tap held `margin-left: auto`:
+     the two headings that have them pushed the chevron to the edge, and the
+     four that do not left it sitting against the title. The count badge takes
+     that role now, because every collapsible heading has one. */
+  [data-collapse] > h2 .fold-n { margin-left: auto; }
+  /* Controls sit with their title and the right edge belongs to the fold
+     affordance. The window selector is included even though its row does not
+     fold, so every in-heading control lines up the same way down the column. */
   [data-collapse] > h2 .seg,
-  [data-collapse] > h2 .hint-tap { margin-left: auto; }
+  [data-collapse] > h2 .hint-tap,
+  [data-collapse] > h2 .hint,
+  .grp-window h2 .seg { margin-left: 8px; }
   [data-collapse]:not(.collapsed) > h2::after {
     transform: rotate(-135deg) translate(-3px, -3px);
   }
@@ -494,14 +506,18 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   [data-collapse].collapsed > *:not(h2) { display: none; }
   [data-collapse].collapsed > h2 { margin-bottom: 0; }
 
-  /* Count beside a collapsed heading, so a folded section still says whether
-     it holds anything worth opening. */
+  /* Count beside the heading, so a folded section says whether it holds
+     anything worth opening. Shown when expanded too: it is the element that
+     right-aligns the chevron, so hiding it would make the chevron jump inward
+     on expand. Dimmed instead, since the list below then speaks for itself. */
   [data-collapse] > h2 .fold-n {
     font-size: 9px; letter-spacing: 0.08em;
     padding: 1px 6px; border-radius: 8px;
     background: rgba(143, 166, 196, 0.16); color: var(--ink);
   }
-  [data-collapse]:not(.collapsed) > h2 .fold-n { display: none; }
+  [data-collapse]:not(.collapsed) > h2 .fold-n {
+    background: none; color: var(--dim); padding-right: 0;
+  }
 
   .panel {
     position: static;
@@ -510,9 +526,23 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
     display: block;
   }
   .panel-right { display: block; }
+
+  /* Every stacked section is separated the same way: one divider and one
+     padding value, no exceptions.
+     Two desktop rules had to be undone here. "Live feed" drops its divider on
+     desktop because it is the top of its own rail, and the first group in the
+     right rail does the same - but stacked on a phone neither is at the top of
+     anything, so both lost their separator and "Live feed" and "Statistics"
+     ended up flush against each other, reading as one heading on two lines.
+     Both of those rules use :first-child, so the overrides must too: a plain
+     `.panel-left h2` loses to `.panel h2:first-child` on specificity no matter
+     how late it appears. */
   .panel-right .grp h2,
-  .panel h2 { padding-top: 18px; border-top: 1px solid var(--line); }
-  .panel-left h2 { padding-top: 10px; border-top: 0; }
+  .panel-right .grp:first-child h2,
+  .panel-left h2,
+  .panel h2:first-child,
+  .console h2,
+  .panel h2 { padding-top: 16px; border-top: 1px solid var(--line); }
 
   /* Cap the feed so the ranking panels are reachable without endless scrolling. */
   .ticker {
