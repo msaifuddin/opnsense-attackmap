@@ -27,6 +27,8 @@ export class Aggregator {
     this.open = new Map();   // collapse key -> arc
     this.recent = [];        // rendered arcs, newest last, capped at bufferSize
     this.rates = [];         // last 90s of events, for the live header counters
+    this.history = [];       // seeded hostile events, for the threat log
+    this.historySize = opts.historySize ?? 400;
     this.rollup = opts.rollup ?? new Rollup();
     this.totals = { fw: 0, ids: 0, block_in: 0, pass_out: 0, internal: 0, alerts: 0, all: 0 };
     this.startedAt = Date.now();
@@ -92,7 +94,39 @@ export class Aggregator {
    */
   ingestHistory(ev) {
     ev.__far__ = { ip: farEnd(ev).ip, dir: ev.dir };
+    const threat = Aggregator.isThreat(ev);
     this.rollup.ingest(ev, Aggregator.isInboundThreat(ev), Date.now());
+
+    // Keep the hostile ones so the threat log is not blank on a fresh deploy.
+    // Counts alone tell you 400 addresses attacked you; this tells you which,
+    // when and on what - which is the part worth reading. Only threats are
+    // kept, so a day of history is a few hundred entries rather than 300k.
+    if (!threat) return;
+    this.history.push({ ...ev, layer: layerOf(ev), threat: true, count: 1, historical: true });
+    // Safety valve only. Trimming by arrival order would be wrong here: the
+    // backfill walks the log newest page first, so the earliest arrivals are the
+    // most recent events. finalizeHistory() sorts it out properly.
+    if (this.history.length > this.historySize * 20) {
+      this.history.splice(0, this.history.length - this.historySize * 20);
+    }
+  }
+
+  /**
+   * Reduce seeded history to the most recent entries, by timestamp.
+   *
+   * Called once the backfill is done. Order of arrival is not order of time -
+   * pages come back newest first, and ascending within each page - so the newest
+   * N has to be decided on the timestamps rather than on position.
+   */
+  finalizeHistory(limit = this.historySize) {
+    this.history.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    if (this.history.length > limit) this.history.splice(0, this.history.length - limit);
+    return this.history.length;
+  }
+
+  /** Historical threats for a freshly-connected client, oldest first. */
+  historySnapshot(limit = 150) {
+    return this.history.slice(-limit);
   }
 
   prune(now = Date.now()) {

@@ -7,6 +7,7 @@ import {
   setFwTzOffsetMinutes, detectFwTzOffset, formatTzOffset,
 } from './normalize.js';
 import { geoLookup, geoCached, initGeo, geoMode, geoProviderDomain } from './geo.js';
+import { parseFilterLine } from './filterlog.js';
 
 /**
  * Owns both feeds and turns them into geo-enriched, deduped events.
@@ -220,45 +221,83 @@ export class Pipeline extends EventEmitter {
    * possible and one fetch is all we get - and asking for too much kills the
    * request server-side: 400k rows exhausts PHP's 1 GB limit on the firewall.
    *
+   * Walks the log backwards a page at a time until it reaches BACKFILL_HOURS or
+   * runs out of log. Paging is what makes a full day reachable at all: each
+   * page costs ~3 MB whatever its depth, whereas asking the parsed endpoint for
+   * a day in one request kills the PHP worker.
+   *
+   * Pages get slower the deeper they go (the API seeks from the top each time:
+   * ~0.6 s at page 1, ~3.6 s at page 26), so this runs in the background and
+   * yields between pages rather than blocking startup.
+   *
    * @param {(t:number)=>boolean} isGap true when that moment has no counts yet.
    *   Restored history is therefore left alone and only the holes are filled -
    *   both the period before the service ever ran and any downtime since.
    */
   async backfill(onEvents, isGap) {
-    const limit = config.stats.backfillRows;
-    if (!limit || !this.running) return null;
+    const hours = config.stats.backfillHours;
+    if (!hours || !this.running) return null;
 
     const t0 = Date.now();
-    const rows = await this.client.fwLog({ limit });
-    if (!rows.length) return null;
-
-    const events = [];
-    for (const row of rows.reverse()) {
-      const ev = normalizeFw(row, { isHome: this.isHome });
-      const t = Date.parse(ev.ts);
-      if (!Number.isFinite(t) || !isGap(t)) continue;
-      // Do not re-count what the live poller has already seen since startup.
-      if (t >= this.startedAt) continue;
-      events.push(ev);
-    }
-    if (!events.length) return null;
-
-    // Geo-enrich so the origins panel covers history too. Sequentially and only
-    // against a local database: tens of thousands of addresses would take days
-    // through the ip-api fallback at ~15 requests/minute, so there we use
-    // whatever is already cached and leave the rest unplaced rather than
-    // queueing a backlog the live path would then be stuck behind.
+    const horizon = t0 - hours * 3_600_000;
+    // Geo-enrich so the origins panel covers history too, but only against a
+    // local database: a day is a quarter of a million addresses, which through
+    // the ip-api fallback at ~15 requests/minute would take days and leave the
+    // live path queued behind it. There we use whatever is already cached.
     const local = geoMode() === 'mmdb' || geoMode() === 'mmdb+asn';
-    for (const ev of events) {
-      ev.src.geo = local ? await this.#geoFor(ev.src.ip) : (geoCached(ev.src.ip) ?? null);
-      ev.dst.geo = local ? await this.#geoFor(ev.dst.ip) : (geoCached(ev.dst.ip) ?? null);
-      ev.src.home = this.isHome(ev.src.ip);
-      ev.dst.home = this.isHome(ev.dst.ip);
-    }
-    onEvents(events);
 
-    const spanH = (Date.parse(events[events.length - 1].ts) - Date.parse(events[0].ts)) / 3_600_000;
-    return { rows: rows.length, used: events.length, spanH, ms: Date.now() - t0 };
+    let pages = 0;
+    let scanned = 0;
+    let used = 0;
+    let oldestUsed = t0;
+
+    for (let page = 1; page <= config.stats.backfillMaxPages; page++) {
+      if (!this.running) break;
+      const rows = await this.client.filterLogPage({ page, rowCount: config.stats.backfillPageRows });
+      pages++;
+      if (!rows.length) break; // end of the retained log
+      scanned += rows.length;
+
+      // Handled a page at a time rather than accumulated: a day is ~264k events
+      // and holding them all before processing costs well over a hundred
+      // megabytes for no benefit.
+      const events = [];
+      let reachedHorizon = false;
+      for (const r of rows) {
+        const parsed = parseFilterLine(r.line, r.timestamp);
+        if (!parsed) continue;
+        const ev = normalizeFw(parsed, { isHome: this.isHome });
+        const t = Date.parse(ev.ts);
+        if (!Number.isFinite(t)) continue;
+        if (t < horizon) { reachedHorizon = true; continue; }
+        // Do not re-count restored history, nor anything the live poller has
+        // already ingested since startup.
+        if (t >= this.startedAt || !isGap(t)) continue;
+        if (t < oldestUsed) oldestUsed = t;
+        events.push(ev);
+      }
+
+      if (events.length) {
+        // Oldest first within the page, so counts land in ascending time order.
+        events.reverse();
+        for (const ev of events) {
+          ev.src.geo = local ? await this.#geoFor(ev.src.ip) : (geoCached(ev.src.ip) ?? null);
+          ev.dst.geo = local ? await this.#geoFor(ev.dst.ip) : (geoCached(ev.dst.ip) ?? null);
+          ev.src.home = this.isHome(ev.src.ip);
+          ev.dst.home = this.isHome(ev.dst.ip);
+        }
+        onEvents(events);
+        used += events.length;
+      }
+
+      if (reachedHorizon) break;
+      // Let the event loop breathe: the live pollers must keep running while
+      // this walks a day of history.
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    const spanH = used ? (Date.now() - oldestUsed) / 3_600_000 : 0;
+    return { rows: scanned, used, pages, spanH, ms: Date.now() - t0 };
   }
 
   /** Feed historical firewall events back at speed, to exercise the renderer. */

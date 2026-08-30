@@ -206,6 +206,27 @@ export class OPNsenseClient {
     return { rows: fresh, digest: rows[0]?.__digest__ ?? digest, saturated };
   }
 
+  /**
+   * One page of the raw filter log, newest first. POST-only.
+   *
+   * This is the pageable counterpart to fwLog(), and the only way to read more
+   * than a few hours back. fwLog() has no cursor, so reaching a day of history
+   * through it means a single enormous request - and at 400k rows that exhausts
+   * PHP's 1 GB limit and the request dies on the firewall. Here each page costs
+   * ~3 MB regardless of depth, and the log retains around 72 hours.
+   *
+   * Rows are raw syslog: use parseFilterLine() from ./filterlog.js on `line`.
+   * `rowCount` is capped server-side at 9999.
+   */
+  async filterLogPage({ page = 1, rowCount = 10000 } = {}) {
+    const res = await this.#api('POST', '/api/diagnostics/log/core/filter', {
+      body: { current: page, rowCount },
+    });
+    const rows = res?.rows ?? [];
+    // Other daemons share this log; only filterlog rows are parseable.
+    return rows.filter((r) => r.process_name === 'filterlog');
+  }
+
   /** Suricata alerts from eve.json, newest first. POST-only. */
   async idsAlerts({ rowCount = config.poll.idsRowCount, current = 1, searchPhrase = '' } = {}) {
     const res = await this.#api('POST', '/api/ids/service/queryAlerts', {

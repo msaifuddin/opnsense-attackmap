@@ -145,15 +145,22 @@ export const config = {
     persist: bool('STATS_PERSIST', true),
     file: str('STATS_FILE', './data/rollup.json'),
     saveEveryMs: num('STATS_SAVE_MS', 300_000),
-    // Rows pulled from the firewall log at startup to seed the statistics, so a
-    // fresh deploy does not show two minutes of data under a "24h" label. Only
-    // the gap since the last save is used; the rest is discarded.
+    // How much history to seed from the firewall log at startup, so a fresh
+    // deploy does not show minutes of data under a "24h" label. Only gaps are
+    // filled; restored history is left alone.
     //
-    // Keep this well clear of the firewall's limits: measured on OPNsense
-    // 26.7.1, 100k rows returns ~9h in 14s, but 400k exhausts PHP's 1 GB memory
-    // limit and the request dies server-side. 50k is roughly 4.5h with room for
-    // a much higher event rate than the box currently sees.
-    backfillRows: num('BACKFILL_ROWS', 50_000),
+    // This walks the PAGED log endpoint backwards rather than making one huge
+    // request. That distinction matters: measured on OPNsense 26.7.1, asking
+    // the parsed endpoint for 400k rows exhausts PHP's 1 GB limit and the
+    // request dies on the firewall, whereas each page here costs ~3 MB however
+    // deep it goes. 24h is roughly 26 pages and ~55s of background work; the
+    // log itself retains about 72h.
+    backfillHours: num('BACKFILL_HOURS', 24),
+    // Server caps a page at 9999 rows, so asking for more just wastes nothing.
+    backfillPageRows: num('BACKFILL_PAGE_ROWS', 10_000),
+    // Hard stop, so a very busy network cannot turn startup into an unbounded
+    // walk. 200 pages is ~2M rows.
+    backfillMaxPages: num('BACKFILL_MAX_PAGES', 200),
   },
   ids: {
     // What counts as a threat rather than telemetry, on the 1-4 scale

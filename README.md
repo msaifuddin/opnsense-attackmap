@@ -191,7 +191,7 @@ matter most:
 | `STATS_WINDOWS` | `1h,24h` | Ranking windows offered in the UI; the first is the default. |
 | `STATS_RETAIN_HOURS` | `26` | How much history to keep. Must cover your longest window. |
 | `STATS_PERSIST` | `1` | Keep history across restarts in `data/rollup.json`. |
-| `BACKFILL_ROWS` | `50000` | Firewall log rows read at startup to seed the statistics. `0` disables. Do not go near 400k — it OOMs the firewall. |
+| `BACKFILL_HOURS` | `24` | History seeded from the firewall log at startup, by paging. `0` disables. |
 | `COLLAPSE_MS` | `10000` | Window for merging repeat `src → dst:port` hits into one arc. |
 | `MAX_ARCS` | `300` | Hard cap, oldest dropped, so a scan burst cannot stall the renderer. |
 | `REPLAY` | `0` | Replay recent firewall events at 10× to exercise the renderer. |
@@ -287,19 +287,31 @@ for 1h, longer for 24h — because a day-long ranking cannot visibly change in
 between. The live header counters bypass all of this and are computed from a
 90-second ring, so the page still reads as live.
 
-**Seeding from the firewall log.** On startup the service pulls
-`BACKFILL_ROWS` (50,000, about 4½ hours) from the firewall log and counts them
-into the statistics, so a fresh deploy is not showing two minutes of data under a
-"24h" label. After a restart only the gap since the last save is used. Backfilled
-events never become arcs — replaying yesterday's attacks across the map would be
-a lie — and never touch the header counters, which mean "since this process
-started".
+**Seeding from the firewall log.** On startup the service walks the firewall log
+backwards and counts `BACKFILL_HOURS` (24) into the statistics, so a fresh deploy
+shows a full day immediately rather than minutes of data under a "24h" label.
+After a restart only the gap since the last save is filled. Measured on OPNsense
+26.7.1 that is ~27 pages and ~65 s of background work for 264k events; the log
+retains about 72 h, so 24 h has headroom.
 
-The size is bounded deliberately. The endpoint has no cursor, so paging backwards
-is impossible and one fetch is all there is; measured on OPNsense 26.7.1, 100k
-rows returns ~9 h in 14 s, but **400k exhausts PHP's 1 GB limit and the request
-dies on the firewall**. 50k leaves generous headroom. IDS alerts cannot be
-backfilled at all — `queryAlerts` retains only ~500 records, about half an hour.
+Two endpoints exist and only one of them can do this. `/api/diagnostics/firewall/log`
+returns parsed rows but has **no cursor**, so reaching a day back means one
+enormous request — and at 400k rows that exhausts PHP's 1 GB limit and the
+request dies on the firewall. `/api/diagnostics/log/core/filter` pages properly
+and costs ~3 MB per 10k rows however deep it goes; it returns raw syslog, which
+`server/filterlog.js` parses back into the same shape. Pages get slower the
+deeper they go (0.6 s at page 1, 3.6 s at page 26), so the walk runs in the
+background and yields between pages rather than blocking startup.
+
+Seeded **hostile** events also populate the threat log — up to 400 of them,
+dimmed and date-stamped so a day-old attack is never mistaken for something
+happening now. That is the difference between knowing 4,000 addresses attacked
+you and being able to read what they did. Backfilled events never become arcs
+(replaying yesterday's attacks across the map would be a lie) and never touch the
+header counters, which mean "since this process started".
+
+IDS alerts cannot be backfilled — `queryAlerts` retains only ~500 records, about
+half an hour.
 
 **Persistence.** History is written to `data/rollup.json` every five minutes and
 on shutdown, so a redeploy does not reset the panels. **That file contains real,
@@ -359,11 +371,12 @@ Capture**, which is a better tool for that job than an IDS.
 - **Flat map, flat arcs.** Arcs take the direct chord between two points. Routing
   “the short way” around the antimeridian is correct on a globe, but on a flat
   map it just looks like an attack flying off the wrong edge.
-- **Mobile is a reduced dashboard, not a shrunken one.** Below 900px the raw
-  ticker and the origin, port and signature panels are dropped entirely, leaving
-  the counters, the map, the plain-language threat log and one ranking. The two
-  questions worth answering on a phone are "is anything attacking me" and "who";
-  the rest is desktop analysis, and squeezing it onto a phone serves nobody.
+- **Mobile folds rather than hides.** Below 900px every panel is still there, but
+  collapsed to a single heading carrying a count, with the plain-language threat
+  log open by default because it answers the question you opened the page to ask.
+  Tap a heading to expand it. An earlier version simply dropped those panels,
+  which threw information away instead of deferring it; folding costs one row
+  each, so the page is only as tall as what you have chosen to look at.
 - **The threat log fills the map's dead band.** An equirectangular map is fixed
   at 2:1, so in a taller gap it letterboxes. Rather than leave that strip empty
   it carries the plain-language log, and the projection measures the console as

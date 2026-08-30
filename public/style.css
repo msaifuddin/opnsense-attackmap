@@ -357,6 +357,10 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
 .console .tl-blocked  { --c: var(--red); }
 .console .tl-alert    { --c: var(--magenta); }
 .console .tl-internal { --c: #8fa6c4; }
+/* Seeded from the firewall log at startup rather than seen live. Dimmed so a
+   day-old attack never reads as something happening right now. */
+.console .tl-old { opacity: 0.62; }
+.console .tl-old .msg b { color: var(--ink); }
 
 .console a { color: inherit; text-decoration: none; border-bottom: 1px dotted rgba(143, 233, 255, 0.45); }
 .console a:hover { color: #8fe9ff; border-bottom-color: currentColor; }
@@ -448,13 +452,11 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
     background: linear-gradient(to bottom, rgba(4, 7, 15, 0.92), var(--bg) 40px);
   }
 
-  /* A phone gets a deliberately reduced dashboard, not a squeezed copy of the
-     desktop one. The questions worth answering on a small screen are "is
-     anything attacking me" and "who" - so the plain-language log leads, one
-     ranking follows, and the rest is left to the desktop.
-     Hidden panels are not rendered smaller, they are not rendered: the raw
-     ticker, origins, targeted ports and signature lists all stay in the DOM but
-     out of the layout, so switching to a wide window brings them straight back. */
+  /* A phone gets the same information as the desktop, folded up rather than
+     thrown away. The threat log leads because it answers "is anything
+     attacking me" in words; everything else collapses to a single heading you
+     can open when you want it. Collapsed sections cost one row each, so the
+     page is only as tall as what you have chosen to look at. */
   .console {
     position: static;
     grid-column: 1 / -1;
@@ -462,12 +464,44 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   }
   .console ul { max-height: 46vh; }
 
-  /* Scoped to .sheet purely for specificity: the generic `.panel { display:
-     block }` below is equally specific and would otherwise win on source order. */
-  .sheet .panel-left { display: none; }
-  .panel-right .grp { display: none; }
-  .panel-right .grp-window,
-  .panel-right .grp-attackers { display: block; }
+  /* One column, so a tablet does not put the log beside a ranking and make the
+     reading order ambiguous. */
+  .sheet { grid-template-columns: 1fr; }
+
+  /* The heading is the control. */
+  [data-collapse] > h2 {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  [data-collapse] > h2::after {
+    content: '';
+    width: 7px; height: 7px;
+    margin-left: 10px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg) translate(-2px, -2px);
+    transition: transform 0.15s ease;
+    flex: 0 0 auto;
+  }
+  /* Only the last flex item may claim the free space, or the chevron drifts. */
+  [data-collapse] > h2 .seg,
+  [data-collapse] > h2 .hint-tap { margin-left: auto; }
+  [data-collapse]:not(.collapsed) > h2::after {
+    transform: rotate(-135deg) translate(-3px, -3px);
+  }
+  [data-collapse] > h2 + * { margin-bottom: 12px; }
+  [data-collapse].collapsed > *:not(h2) { display: none; }
+  [data-collapse].collapsed > h2 { margin-bottom: 0; }
+
+  /* Count beside a collapsed heading, so a folded section still says whether
+     it holds anything worth opening. */
+  [data-collapse] > h2 .fold-n {
+    font-size: 9px; letter-spacing: 0.08em;
+    padding: 1px 6px; border-radius: 8px;
+    background: rgba(143, 166, 196, 0.16); color: var(--ink);
+  }
+  [data-collapse]:not(.collapsed) > h2 .fold-n { display: none; }
 
   .panel {
     position: static;

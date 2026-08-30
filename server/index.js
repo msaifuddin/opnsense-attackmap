@@ -115,6 +115,9 @@ const hub = new Hub(server, {
     {
       type: 'snapshot',
       arcs: agg.snapshot().map((a) => redact.event(a)),
+      // Seeded hostile events, for the threat log only - they are history, so
+      // they must not be drawn as arcs or counted as live.
+      history: agg.historySnapshot().map((a) => redact.event(a)),
       stats: statsOut(ws.statsWindow),
     },
   ],
@@ -178,10 +181,20 @@ server.listen(config.server.port, config.server.host, async () => {
     pipeline.backfill((events) => {
       for (const ev of events) agg.ingestHistory(ev);
     }, isGap).then((r) => {
-      if (r) {
-        console.log(`[backfill] +${r.spanH.toFixed(1)}h of history from ${r.used} log rows (${(r.ms / 1000).toFixed(1)}s)`);
-        agg.rollup.save();
-      }
+      if (!r) return;
+      const threats = agg.finalizeHistory();
+      console.log(
+        `[backfill] +${r.spanH.toFixed(1)}h of history: ${r.used} events from ${r.rows} log rows ` +
+        `across ${r.pages} pages, ${threats} hostile kept for the log (${(r.ms / 1000).toFixed(1)}s)`
+      );
+      agg.rollup.save();
+      // Anyone already watching connected before this finished, so their panels
+      // and threat log are still empty. Push the seeded view to them.
+      hub.broadcast({
+        type: 'history',
+        history: agg.historySnapshot().map((a) => redact.event(a)),
+      });
+      hub.each((ws) => ws.statsWindow ?? DEFAULT_WINDOW, (w) => ({ type: 'stats', stats: statsOut(w) }));
     }).catch((e) => console.warn(`[backfill] skipped: ${e.message}`));
     console.log(`  privacy=${config.privacy.preset}${redact.active ? '' : ' (nothing redacted)'}\n`);
   } catch (e) {

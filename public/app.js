@@ -268,21 +268,36 @@ function threatSentence(arc) {
 const threatLog = $('threat-log');
 let threatSeen = 0;
 
-function pushThreat(arc) {
+/**
+ * @param {boolean} historical seeded from the firewall log at startup rather
+ *   than observed live. Dimmed and date-stamped so a day-old attack is never
+ *   mistaken for something happening now, and excluded from the live counter.
+ */
+function pushThreat(arc, historical = false) {
   if (!arc.threat) return;
   const { who, text, kind } = threatSentence(arc);
   const li = document.createElement('li');
-  li.className = `tl-${kind}`;
+  li.className = `tl-${kind}${historical ? ' tl-old' : ''}`;
   li.innerHTML =
-    `<span class="t">${fmtTime(arc.ts)}</span>` +
+    `<span class="t">${historical ? fmtWhen(arc.ts) : fmtTime(arc.ts)}</span>` +
     `<span class="msg"><b>${ipHtml(who)}</b> ${escapeHtml(text)}` +
     (arc.count > 1 ? ` <span class="rep">×${arc.count}</span>` : '') +
     `</span>`;
   li.title = arc.signature || `${arc.proto} → ${arc.dst.port ?? ''}`;
   threatLog.prepend(li);
-  while (threatLog.children.length > 60) threatLog.lastElementChild.remove();
+  while (threatLog.children.length > 400) threatLog.lastElementChild.remove();
+  if (historical) return;
   const c = $('console-count');
   if (c) c.textContent = `${++threatSeen} since load`;
+}
+
+/** Time alone is ambiguous once entries span a day, so older ones carry a date. */
+function fmtWhen(iso) {
+  const d = new Date(iso);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour12: false })
+    : `${d.toLocaleDateString([], { day: '2-digit', month: 'short' })} ${d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}`;
 }
 
 const ticker = $('ticker');
@@ -499,6 +514,7 @@ function renderStats(s) {
   renderPorts($('top-ports'), s.topPorts);
   renderSignatures($('top-signatures'), (sigMode === 'all' ? s.topSignaturesAll : s.topSignatures) ?? []);
   renderCoverage(s);
+  updateFoldCounts();
 }
 
 // ---------- websocket ----------
@@ -568,6 +584,9 @@ function connect() {
         ticker.replaceChildren();
         threatLog.replaceChildren();
         threatSeen = 0;
+        // History first, oldest to newest, so that after prepending it reads
+        // newest-first - and live events then stack above it.
+        for (const arc of msg.history ?? []) pushThreat(arc, true);
         // Newest last in the buffer; show oldest first so the ticker reads
         // top-newest after prepending.
         for (const arc of msg.arcs) {
@@ -584,6 +603,15 @@ function connect() {
         if (msg.arc.layer !== 'internal') layer.add(msg.arc);
         pushTicker(msg.arc);
         pushThreat(msg.arc);
+        break;
+      }
+      case 'history': {
+        // Backfill finished after we connected. Rebuild the log with the seeded
+        // events beneath whatever has arrived live in the meantime.
+        const live = [...threatLog.children].filter((li) => !li.classList.contains('tl-old'));
+        threatLog.replaceChildren();
+        for (const arc of msg.history ?? []) pushThreat(arc, true);
+        for (const li of live.reverse()) threatLog.prepend(li);
         break;
       }
       case 'bump':
@@ -671,6 +699,94 @@ for (const label of document.querySelectorAll('.lay')) {
     layer.clear();
   });
 }
+
+// ---------- collapsible sections (narrow screens) ----------
+
+/**
+ * On a phone or tablet every panel is still present, just folded.
+ *
+ * Hiding them outright was the earlier approach and it threw away information
+ * rather than deferring it. Folding costs one heading row per section, so the
+ * page ends up only as tall as what you have actually opened - which is the
+ * "no scrolling beyond what's needed" part.
+ *
+ * The threat log is open by default because it is the section that answers the
+ * question you opened the page to ask.
+ */
+const FOLD = [
+  ['#threat-console', false],                  // the log leads, open
+  ['.panel-left', true],
+  ['.grp:has(#top-countries)', true],
+  ['.grp-attackers', true],
+  ['.grp:has(#top-ports)', true],
+  ['.grp:has(#top-signatures)', true],
+];
+
+const narrow = matchMedia('(max-width: 900px)');
+// Remembered per section so a fold you opened does not snap shut on rotate.
+const foldState = new Map();
+
+function applyFolding() {
+  const on = narrow.matches;
+  for (const [sel, collapsedByDefault] of FOLD) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    if (!on) {
+      el.removeAttribute('data-collapse');
+      el.classList.remove('collapsed');
+      continue;
+    }
+    el.setAttribute('data-collapse', '');
+    const h2 = el.querySelector(':scope > h2');
+    if (h2 && !h2.dataset.foldWired) {
+      h2.dataset.foldWired = '1';
+      h2.setAttribute('role', 'button');
+      h2.tabIndex = 0;
+      const toggle = () => {
+        const nowCollapsed = !el.classList.contains('collapsed');
+        el.classList.toggle('collapsed', nowCollapsed);
+        h2.setAttribute('aria-expanded', String(!nowCollapsed));
+        foldState.set(sel, nowCollapsed);
+      };
+      // A control inside the heading - the window selector, threats|all - must
+      // not also fold the section it sits in.
+      h2.addEventListener('click', (e) => { if (!e.target.closest('button, a, .seg')) toggle(); });
+      h2.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        if (e.target.closest('button, a, .seg')) return;
+        e.preventDefault();
+        toggle();
+      });
+    }
+    const collapsed = foldState.get(sel) ?? collapsedByDefault;
+    el.classList.toggle('collapsed', collapsed);
+    h2?.setAttribute('aria-expanded', String(!collapsed));
+  }
+  updateFoldCounts();
+}
+
+/** A folded heading should still say whether there is anything inside. */
+function updateFoldCounts() {
+  if (!narrow.matches) return;
+  for (const [sel] of FOLD) {
+    const el = document.querySelector(sel);
+    const h2 = el?.querySelector(':scope > h2');
+    if (!h2) continue;
+    const list = el.querySelector('ul');
+    const n = list ? list.querySelectorAll(':scope > li:not(.empty)').length : 0;
+    let badge = h2.querySelector('.fold-n');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'fold-n';
+      h2.appendChild(badge);
+    }
+    badge.textContent = n ? String(n) : '—';
+  }
+}
+
+narrow.addEventListener('change', applyFolding);
+addEventListener('resize', updateFoldCounts);
+applyFolding();
 
 // ---------- boot ----------
 
